@@ -1,5 +1,4 @@
 use crate::config::Config;
-use crate::mount::Mounter;
 use std::process::Command;
 use std::{thread, time};
 use threadpool::ThreadPool;
@@ -7,11 +6,11 @@ use yaml_rust::Yaml;
 
 pub fn run(cfg: &Config) {
     let pool = ThreadPool::new(cfg.threadpool_size);
-    for item in cfg.doc["borg"].as_vec().unwrap_or(&Vec::new()) {
+    for item in cfg.doc["database"].as_vec().unwrap_or(&Vec::new()) {
         let my_item = item.clone();
         let my_cfg = cfg.clone();
         pool.execute(move || {
-            run_borg_backup(
+            run_database_backup(
                 &my_cfg,
                 my_item["comment"].as_str().unwrap_or(""),
                 my_item["uuid"]
@@ -30,7 +29,7 @@ pub fn run(cfg: &Config) {
     pool.join();
 }
 
-fn run_borg_backup(
+fn run_database_backup(
     cfg: &Config,
     comment: &str,
     uuid: &str,
@@ -38,18 +37,12 @@ fn run_borg_backup(
     dest: &str,
     excludelist: &Vec<Yaml>,
 ) {
-    Command::new("test")
-        .arg("-x")
-        .arg("/usr/bin/borg")
-        .output()
-        .expect("unable to locate borg command");
     if std::path::Path::new(&format!("/dev/disk/by-uuid/{}", uuid)).exists() {
         println!("UUID {} disk is existing.", uuid);
-        let mounter = Mounter::new(uuid, None);
-        let mount_point = mounter.mount();
-        let logfile = Config::generate_logfilename(&cfg.log_dir, "borg", src, dest);
+        // TODO: new mounting class with Drop trait <16-12-20, Heiko Riemer> //
+        let logfile = Config::generate_logfilename(&cfg.log_dir, "database", src, dest);
         println!(
-            "Run borg backup ({}) to disk={}: \"{}\" --> \"{}\"",
+            "Run database backup ({}) to disk={}: \"{}\" --> \"{}\"",
             comment, uuid, src, dest,
         );
         // TODO: set pw as env variable <13-12-20, Heiko Riemer> //
@@ -59,8 +52,7 @@ fn run_borg_backup(
         // TODO: check backup <13-12-20, Heiko Riemer> //
         // TODO: prune backups <13-12-20, Heiko Riemer> //
         // TODO: verify backup or rely on TDD test <13-12-20, Heiko Riemer> //
-        mounter.mount();
-        println!("End borg backup ({}): {}", comment, output.status,);
+        println!("End database backup ({}): {}", comment, output.status,);
         if !output.status.success() {
             std::fs::rename(
                 &logfile,
@@ -69,8 +61,6 @@ fn run_borg_backup(
             .expect("logfile cannot be renamed");
             thread::sleep(time::Duration::from_secs(cfg.retry_interval_sec));
         }
-    } else {
-        println!("UUID {} disk is NOT existing.", uuid);
     }
 }
 
@@ -79,7 +69,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_read_valid_borg_config() {
+    fn test_read_valid_database_config() {
         assert!(false)
     }
 }

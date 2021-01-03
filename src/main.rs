@@ -2,6 +2,9 @@ use single_instance::SingleInstance;
 
 mod borg;
 mod config;
+mod database;
+mod mount;
+mod restic;
 mod rsync;
 
 pub struct BackApp {
@@ -26,8 +29,8 @@ impl BackApp {
     pub fn run(&self) {
         rsync::run(&self.conf);
         borg::run(&self.conf);
-        // TODO: backup via restic <13-12-20, Heiko Riemer> //
-        // TODO: backup databases- 1by1 <13-12-20, Heiko Riemer> //
+        restic::run(&self.conf);
+        database::run(&self.conf);
     }
 }
 
