@@ -1,5 +1,5 @@
 [package]
-name = "backup"
+name = "backmatic"
 version = "0.1.0"
 authors = ["Heiko, Riemer <heiko@eheiko.net>"]
 edition = "2018"
