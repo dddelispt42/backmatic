@@ -1,10 +1,10 @@
-use chrono::Utc;
+use chrono::Local;
 use clap::{crate_version, App, Arg};
 use regex::Regex;
 use std::fs;
 use yaml_rust::{Yaml, YamlLoader};
 
-static DEFAULT_LOCK_FILE: &str = "/tmp/backapp.lock";
+static DEFAULT_LOCK_FILE: &str = "/tmp/backmatic.lock";
 static DEFAULT_CONFIG_FILE: &str = "/home/heiko/backups.yml";
 static DEFAULT_LOGDIR: &str = "/tmp";
 static DEFAULT_THREADPOOLSIZE: usize = 4;
@@ -132,7 +132,7 @@ impl Config {
             buptype,
             src,
             dest,
-            Utc::now().format("%Y%m%d%H%M")
+            Local::now().format("%Y%m%d%H%M")
         );
         return String::from(&format!("{}/{}", log_dir, &Config::filenamify(logstring)));
     }
