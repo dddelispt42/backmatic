@@ -1,4 +1,4 @@
-use crate::config::Config;
+use crate::config::{BackupConfig, Config};
 use chrono::{DateTime, Datelike, Local, NaiveDateTime, TimeZone, Timelike};
 use regex::Regex;
 use std::convert::TryFrom;
@@ -13,8 +13,11 @@ pub fn run(cfg: &Config) {
         let my_item = item.clone();
         let my_cfg = cfg.clone();
         pool.execute(move || {
+            // TODO sanitize all inputs from the yaml files
             // TODO: mount if "mount" key exist (see borg)
             // TODO: check if user can mount - or skip
+            let bupcfg = BackupConfig::new(&my_item);
+            println!("BackupConfig: {:?}", bupcfg);
             run_rsync_backup(
                 &my_cfg,
                 my_item["comment"].as_str().unwrap_or(""),
@@ -133,7 +136,6 @@ fn date_to_file_suffix() -> String {
 
 fn retain_for_period(dest: &str, retention: &str, interval: i64, count: i64) {
     if count < 1 {
-        println!("No {} backup to be kept!", retention);
         return;
     }
     if needs_retention(&dest, retention, interval) {
@@ -196,14 +198,10 @@ fn retain_rsync_backup(
     monthly: i64,
     yearly: i64,
 ) {
-    // ^(((?P<user>[a-zA-Z][a-zA-Z_-]*)@)?(?P<host>[a-zA-Z][.a-zA-Z0-9_-]*):)?(?P<path>/|(/[\w-]+)+$)$
-    let re = regex::Regex::new(
-        // r"^(((?P<user>[a-zA-Z][a-zA-Z_-]*)@)?(?P<host>[a-zA-Z][.a-zA-Z0-9_-]*):)?(?P<path>/|(/[\w-]+)+$)$",
-        r"^(([a-zA-Z][a-zA-Z_-]*)@)?([a-zA-Z][.a-zA-Z0-9_-]*):",
-    );
-    if re.expect("could not get capture groups").is_match(dest) {
+    let re = regex::Regex::new(r"^(([a-zA-Z][a-zA-Z_-]*)@)?([a-zA-Z][.a-zA-Z0-9_-]*):");
+    if re.expect("could not get compile regex").is_match(dest) {
         println!(
-            "Skpping rsync backup retention for remote destination path! ({})",
+            "Rsync: Skipping backup retention for remote destination path! ({})",
             dest
         );
         return;

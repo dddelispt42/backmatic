@@ -18,7 +18,7 @@ impl Mounter {
         Mounter {
             uuid: String::from(uuid),
             mount: mount_point.clone(),
-            pw: pw,
+            pw,
             is_mounted: false,
             _device: device.clone(),
         }

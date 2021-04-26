@@ -2,6 +2,7 @@ use chrono::Local;
 use clap::{crate_version, App, Arg};
 use regex::Regex;
 use std::fs;
+use std::process::Command;
 use yaml_rust::{Yaml, YamlLoader};
 
 static DEFAULT_LOCK_FILE: &str = "/tmp/backmatic.lock";
@@ -22,9 +23,23 @@ pub struct Config {
     pub doc: Yaml,
 }
 
+#[derive(Clone, Debug)]
+pub struct BackupConfig {
+    pub comment: String,
+    pub src: Vec<String>,
+    pub dest: Vec<String>,
+    pub password: Option<String>,
+    pub exclude: Vec<String>,
+    pub keep_hourly: i64,
+    pub keep_daily: i64,
+    pub keep_weekly: i64,
+    pub keep_monthly: i64,
+    pub keep_yearly: i64,
+}
+
 impl Config {
     pub fn new() -> Config {
-        let matches = App::new("Backupmatic")
+        let matches = App::new("Backmatic")
             .version(crate_version!())
             .author("Heiko Riemer <heiko@eheiko.net>")
             .about("Automate rsync/borg/restic backups centrally")
@@ -121,7 +136,14 @@ impl Config {
         }
     }
 
-    pub fn filenamify(input: &str) -> String {
+    fn get_config(filename: &str) -> Result<Vec<Yaml>, &str> {
+        let s = fs::read_to_string(filename).expect("Cannot read backup configuration file.");
+        // TODO: use yaml_validator and define schema to check against <07-12-20, Heiko Riemer> //
+        let docs = YamlLoader::load_from_str(&s).expect("Cannot load deserialize yaml content.");
+        Ok(docs)
+    }
+
+    fn filenamify(input: &str) -> String {
         let re = Regex::new("[!<>:\'\"/\\|?*+]").expect("Problem in RegEx.");
         return re.replace_all(input, "_").to_string();
     }
@@ -137,11 +159,54 @@ impl Config {
         return String::from(&format!("{}/{}", log_dir, &Config::filenamify(logstring)));
     }
 
-    pub fn get_config(filename: &str) -> Result<Vec<Yaml>, &str> {
-        let s = fs::read_to_string(filename).expect("Cannot read backup configuration file.");
-        // TODO: use yaml_validator and define schema to check against <07-12-20, Heiko Riemer> //
-        let docs = YamlLoader::load_from_str(&s).expect("Cannot load deserialize yaml content.");
-        Ok(docs)
+    pub fn command_existing(cmd: &str) -> bool {
+        match Command::new("test").arg("-x").arg(cmd).status() {
+            Ok(status) => return status.success(),
+            Err(err) => {
+                println!("{} not executable! - {}", cmd, err);
+                return false;
+            }
+        }
+    }
+}
+
+impl BackupConfig {
+    pub fn new(cfg: &Yaml) -> BackupConfig {
+        BackupConfig {
+            comment: cfg["comment"].as_str().unwrap_or("").to_string(),
+            src: BackupConfig::yaml2string_list(&cfg["src"]),
+            dest: BackupConfig::yaml2string_list(&cfg["dest"]),
+            password: match cfg["password"].as_str() {
+                None => None,
+                Some(value) => Some(value.to_string()),
+            },
+            exclude: BackupConfig::yaml2string_list(&cfg["exclude"]),
+            keep_hourly: cfg["keep_hourly"].as_i64().unwrap_or(0),
+            keep_daily: cfg["keep_daily"].as_i64().unwrap_or(0),
+            keep_weekly: cfg["keep_weekly"].as_i64().unwrap_or(0),
+            keep_monthly: cfg["keep_monthly"].as_i64().unwrap_or(0),
+            keep_yearly: cfg["keep_yearly"].as_i64().unwrap_or(0),
+        }
+    }
+    fn yaml2string_list(yaml: &Yaml) -> Vec<String> {
+        let mut retval: Vec<String> = Vec::new();
+        if yaml.is_array() {
+            for value in yaml.as_vec().unwrap_or(&Vec::new()) {
+                retval.push(
+                    value
+                        .as_str()
+                        .expect("not a string value in yaml file")
+                        .to_string(),
+                );
+            }
+        } else {
+            retval.push(
+                yaml.as_str()
+                    .expect("not a string value in yaml file")
+                    .to_string(),
+            );
+        }
+        retval
     }
 }
 
