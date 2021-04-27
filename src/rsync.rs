@@ -40,10 +40,10 @@ fn run_rsync_backup(cfg: &Config, bup: &BackupConfig) {
             );
             let mut cmd = Command::new("rsync");
             cmd.arg("-avHAXEh")
-                .arg("--stats")
+                // .arg("--stats")
                 .arg("--delete")
                 .arg("--delete-excluded")
-                .arg("--info=BACKUP,COPY,DEL,MOUNT,NAME1,SKIP,STATS3,SYMSAFE")
+                // .arg("--info=BACKUP,COPY,DEL,MOUNT,NAME1,SKIP,STATS3,SYMSAFE")
                 .arg(&format!("--log-file={}", &bup.logfile));
             for exclude in &bup.exclude {
                 cmd.arg(&format!("--exclude={}", exclude));
@@ -56,16 +56,8 @@ fn run_rsync_backup(cfg: &Config, bup: &BackupConfig) {
                 .output()
                 .expect("rsync - failed to execute process");
             println!("End rsync backup ({}): {}", bup.comment, output.status);
+            Config::log_output(&bup.logfile, &output);
             if !output.status.success() {
-                fs::rename(
-                    &bup.logfile,
-                    &format!(
-                        "{}.ERROR_{}",
-                        bup.logfile,
-                        output.status.code().unwrap_or(0)
-                    ),
-                )
-                .expect("logfile cannot be renamed");
                 thread::sleep(std::time::Duration::from_secs(cfg.retry_interval_sec));
             } else {
                 break;

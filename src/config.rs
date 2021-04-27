@@ -1,7 +1,10 @@
 use chrono::Local;
 use clap::{crate_version, App, Arg};
+use regex::Regex;
 use std::fs;
-use std::process::Command;
+use std::fs::OpenOptions;
+use std::io::Write;
+use std::process::{Command, Output};
 use yaml_rust::{Yaml, YamlLoader};
 
 static DEFAULT_LOCK_FILE: &str = "/tmp/backmatic.lock";
@@ -136,6 +139,29 @@ impl Config {
             }
         }
     }
+
+    pub fn log_output(logfile: &str, output: &Output) {
+        {
+            let mut file = OpenOptions::new()
+                .create(true)
+                .write(true)
+                .append(true)
+                .open(logfile)
+                .expect("logfile cannot be created");
+            file.write_all(&output.stdout)
+                .expect("logfile - stdout cannot be written");
+            file.write_all(&output.stderr)
+                .expect("logfile - stderr cannot be written");
+        }
+
+        if !output.status.success() {
+            std::fs::rename(
+                &logfile,
+                &format!("{}.ERROR_{}", logfile, output.status.code().unwrap_or(0)),
+            )
+            .expect("logfile cannot be renamed");
+        }
+    }
 }
 
 impl BackupConfig {
@@ -144,13 +170,14 @@ impl BackupConfig {
             None => DEFAULT_LOGDIR,
             Some(value) => value,
         };
+        let comment: &str = cfg["comment"].as_str().unwrap_or("");
         BackupConfig {
             buptype: buptype.to_string(),
-            comment: cfg["comment"].as_str().unwrap_or("").to_string(),
+            comment: comment.to_string(),
             src: BackupConfig::yaml2string_list(&cfg["src"]),
             dest: BackupConfig::yaml2string_list(&cfg["dest"]),
             logdir: logdir.to_string(),
-            logfile: BackupConfig::generate_logfilename(&logdir, buptype),
+            logfile: BackupConfig::generate_logfilename(&logdir, buptype, comment),
             password: cfg["password"].as_str().map(|value| value.to_string()),
             exclude: BackupConfig::yaml2string_list(&cfg["exclude"]),
             keep_hourly: cfg["keep_hourly"].as_i64().unwrap_or(0),
@@ -182,10 +209,17 @@ impl BackupConfig {
         }
         retval
     }
-    fn generate_logfilename(log_dir: &str, buptype: &str) -> String {
+
+    fn filenamify(input: &str) -> String {
+        let re = Regex::new("[!<> :\'\"/\\|?*+]").expect("Problem in RegEx.");
+        return re.replace_all(input, "_").to_string();
+    }
+
+    fn generate_logfilename(log_dir: &str, buptype: &str, comment: &str) -> String {
         let logstring: &str = &format!(
-            "backup-{}_{}.log",
+            "backup-{}_{}_{}.log",
             buptype,
+            BackupConfig::filenamify(&comment),
             Local::now().format("%Y%m%d%H%M")
         );
         return String::from(&format!("{}/{}", log_dir, logstring));

@@ -1,7 +1,6 @@
 use crate::config::{BackupConfig, Config};
 use std::ffi::OsStr;
-use std::io::{self, Write};
-use std::process::{Command, Output};
+use std::process::Command;
 use std::{thread, time};
 use threadpool::ThreadPool;
 
@@ -41,21 +40,6 @@ pub fn run(cfg: &Config) {
     pool.join();
 }
 
-fn log_output(logfile: &str, output: &Output) {
-    // TODO: direct all cmd output into log file
-    // TODO: use this everywhere (move to common)
-    io::stdout().write_all(&output.stdout).unwrap();
-    io::stderr().write_all(&output.stderr).unwrap();
-
-    if !output.status.success() {
-        std::fs::rename(
-            &logfile,
-            &format!("{}.ERROR_{}", logfile, output.status.code().unwrap_or(0)),
-        )
-        .expect("logfile cannot be renamed");
-    }
-}
-
 fn is_repo_existing(dest: &str) -> bool {
     let mut cmd = Command::new("rsync");
     cmd.arg(&dest);
@@ -75,7 +59,7 @@ fn init_repo(logfile: &str, dest: &str, pw: &Option<String>) -> bool {
     cmd.arg(dest);
     println!("Repo not existing - calling: {:?}", cmd);
     let output = cmd.output().expect("borg - failed to init repo");
-    log_output(&logfile, &output);
+    Config::log_output(&logfile, &output);
     output.status.success()
 }
 
@@ -85,8 +69,6 @@ fn run_borg_backup(bup: &BackupConfig) -> Result<(), ()> {
             "Run {} backup ({}): \"{:?}\" --> \"{:?}\"",
             bup.buptype, bup.comment, bup.src, dest,
         );
-        // TODO: this check only works locally
-        // if !std::path::Path::new(&dest).is_dir() && !init_repo(&bup.logfile, &dest, &bup.password) {
         if !is_repo_existing(&dest) && !init_repo(&bup.logfile, &dest, &bup.password) {
             return Err(());
         }
@@ -105,9 +87,8 @@ fn run_borg_backup(bup: &BackupConfig) -> Result<(), ()> {
         for src in &bup.src {
             cmd.arg(src);
         }
-        // println!("Cmd borg backup: {:?}", cmd);
         let output = cmd.output().expect("borg - failed to execute process");
-        log_output(&bup.logfile, &output);
+        Config::log_output(&bup.logfile, &output);
         println!("End borg backup ({}): {}", bup.comment, output.status);
         if !output.status.success() {
             return Err(());
@@ -138,7 +119,7 @@ fn prune_borg_backup(bup: &BackupConfig) -> Result<(), ()> {
             .arg(bup.keep_yearly.to_string())
             .arg(dest);
         let output = cmd.output().expect("borg - failed to execute process");
-        log_output(&bup.logfile, &output);
+        Config::log_output(&bup.logfile, &output);
         println!("End borg pruning: {}", output.status);
         if !output.status.success() {
             return Err(());
