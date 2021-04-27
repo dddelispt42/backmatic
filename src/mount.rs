@@ -17,10 +17,10 @@ impl Mounter {
         device.push_str(uuid);
         Mounter {
             uuid: String::from(uuid),
-            mount: mount_point.clone(),
+            mount: mount_point,
             pw,
             is_mounted: false,
-            _device: device.clone(),
+            _device: device,
         }
     }
     pub fn mount(&self) -> Result<&str, &str> {
@@ -57,7 +57,7 @@ impl Mounter {
 impl Drop for Mounter {
     fn drop(&mut self) {
         if self.is_mounted {
-            self.umount();
+            self.umount().expect("unmounting failed");
         }
     }
 }

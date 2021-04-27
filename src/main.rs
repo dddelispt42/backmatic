@@ -15,7 +15,7 @@ pub struct BackApp {
 impl BackApp {
     pub fn new() -> BackApp {
         let cfg = config::Config::new();
-        println!("Settings: {:?}", cfg);
+        // println!("Settings: {:?}", cfg);
         let instance = SingleInstance::new(&cfg.lock_file)
             .expect("Cannot create a lockfile to guarantee single application use.");
         if !instance.is_single() {
@@ -31,6 +31,12 @@ impl BackApp {
         borg::run(&self.conf);
         restic::run(&self.conf);
         database::run(&self.conf);
+    }
+}
+
+impl Default for BackApp {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

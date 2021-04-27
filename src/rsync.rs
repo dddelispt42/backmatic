@@ -5,86 +5,71 @@ use std::convert::TryFrom;
 use std::process::Command;
 use std::{fs, path, thread};
 use threadpool::ThreadPool;
-use yaml_rust::Yaml;
+
+static BUPTYPE: &str = "rsync";
+static BUPCMD: &str = "/usr/bin/rsync";
 
 pub fn run(cfg: &Config) {
     let pool = ThreadPool::new(cfg.threadpool_size);
-    for item in cfg.doc["rsync"].as_vec().unwrap_or(&Vec::new()) {
+    for item in cfg.doc[BUPTYPE].as_vec().unwrap_or(&Vec::new()) {
         let my_item = item.clone();
         let my_cfg = cfg.clone();
         pool.execute(move || {
             // TODO sanitize all inputs from the yaml files
             // TODO: mount if "mount" key exist (see borg)
             // TODO: check if user can mount - or skip
-            let bupcfg = BackupConfig::new(&my_item);
-            println!("BackupConfig: {:?}", bupcfg);
-            run_rsync_backup(
-                &my_cfg,
-                my_item["comment"].as_str().unwrap_or(""),
-                my_item["src"]
-                    .as_str()
-                    .expect("unable to find src key in backup config"),
-                my_item["dest"]
-                    .as_str()
-                    .expect("unable to find dest key in backup config"),
-                my_item["exclude"].as_vec().unwrap_or(&Vec::new()),
-            );
-            retain_rsync_backup(
-                my_item["dest"]
-                    .as_str()
-                    .expect("unable to find dest key in backup config"),
-                my_item["keep_hourly"].as_i64().unwrap_or(0),
-                my_item["keep_daily"].as_i64().unwrap_or(0),
-                my_item["keep_weekly"].as_i64().unwrap_or(0),
-                my_item["keep_monthly"].as_i64().unwrap_or(0),
-                my_item["keep_yearly"].as_i64().unwrap_or(0),
-            );
+            // let mounter = Mounter::new(uuid, None);
+            let bupcfg = BackupConfig::new(&my_item, BUPTYPE);
+            run_rsync_backup(&my_cfg, &bupcfg);
+            retain_rsync_backup(&bupcfg);
             // TODO: skip in case of Windows and for bad file system
         });
     }
     pool.join();
 }
 
-fn run_rsync_backup(cfg: &Config, comment: &str, src: &str, dest: &str, excludelist: &Vec<Yaml>) {
-    Command::new("test")
-        .arg("-x")
-        .arg("/usr/bin/rsync")
-        .output()
-        .expect("unable to locate rsync command");
-    for _ in 1..cfg.retry_count {
-        let logfile = Config::generate_logfilename(&cfg.log_dir, "rsync", src, dest);
-        println!(
-            "Run rsync backup ({}): \"{}\" --> \"{}\"",
-            comment, src, dest,
-        );
-        let mut cmd = Command::new("rsync");
-        cmd.arg("-avHAXEh")
-            .arg("--stats")
-            .arg("--delete")
-            .arg("--delete-excluded")
-            .arg("--info=BACKUP,COPY,DEL,MOUNT,NAME1,SKIP,STATS3,SYMSAFE")
-            .arg(&format!("--log-file={}", &logfile));
-        for exclude in excludelist {
-            let exstr = exclude
-                .as_str()
-                .expect("Exclusion string cannot be used to create rsync parameter.");
-            cmd.arg(&format!("--exclude={}", exstr));
-        }
-        let output = cmd
-            .arg(src)
-            .arg(dest)
-            .output()
-            .expect("rsync - failed to execute process");
-        println!("End rsync backup ({}): {}", comment, output.status);
-        if !output.status.success() {
-            fs::rename(
-                &logfile,
-                &format!("{}.ERROR_{}", logfile, output.status.code().unwrap_or(0)),
-            )
-            .expect("logfile cannot be renamed");
-            thread::sleep(std::time::Duration::from_secs(cfg.retry_interval_sec));
-        } else {
-            break;
+fn run_rsync_backup(cfg: &Config, bup: &BackupConfig) {
+    if !Config::command_existing(BUPCMD) {
+        return;
+    }
+    for dest in &bup.dest {
+        for _ in 1..cfg.retry_count {
+            println!(
+                "Run {} backup ({}): \"{:?}\" --> \"{:?}\"",
+                bup.buptype, bup.comment, bup.src, dest,
+            );
+            let mut cmd = Command::new("rsync");
+            cmd.arg("-avHAXEh")
+                .arg("--stats")
+                .arg("--delete")
+                .arg("--delete-excluded")
+                .arg("--info=BACKUP,COPY,DEL,MOUNT,NAME1,SKIP,STATS3,SYMSAFE")
+                .arg(&format!("--log-file={}", &bup.logfile));
+            for exclude in &bup.exclude {
+                cmd.arg(&format!("--exclude={}", exclude));
+            }
+            for src in &bup.src {
+                cmd.arg(src);
+            }
+            let output = cmd
+                .arg(dest)
+                .output()
+                .expect("rsync - failed to execute process");
+            println!("End rsync backup ({}): {}", bup.comment, output.status);
+            if !output.status.success() {
+                fs::rename(
+                    &bup.logfile,
+                    &format!(
+                        "{}.ERROR_{}",
+                        bup.logfile,
+                        output.status.code().unwrap_or(0)
+                    ),
+                )
+                .expect("logfile cannot be renamed");
+                thread::sleep(std::time::Duration::from_secs(cfg.retry_interval_sec));
+            } else {
+                break;
+            }
         }
     }
 }
@@ -96,20 +81,22 @@ fn needs_retention(dest: &str, retention: &str, interval: i64) -> bool {
         .parent()
         .expect("cannot get parent of backup path");
     let re = Regex::new(&format!("{}.{}", dest, retention)).expect("invalid regex");
-    for entry in parent.read_dir().expect("backup dir parent not existing") {
-        if let Ok(entry) = entry {
-            if entry.path().is_dir() {
-                if let Some(dir) = entry.path().to_str() {
-                    if dir.starts_with(&format!("{}.{}", dest, retention)) {
-                        let naivetimestamp =
-                            NaiveDateTime::parse_from_str(&re.replace(dir, ""), "%Y-%m-%d-%H-%M")
-                                .expect("no valid datetime format");
-                        let localtimestamp: DateTime<Local> =
-                            Local.from_local_datetime(&naivetimestamp).unwrap();
-                        let period = Local::now().signed_duration_since(localtimestamp);
-                        if period.num_seconds() < interval {
-                            is_needed = false
-                        }
+    for entry in parent
+        .read_dir()
+        .expect("backup dir parent not existing")
+        .flatten()
+    {
+        if entry.path().is_dir() {
+            if let Some(dir) = entry.path().to_str() {
+                if dir.starts_with(&format!("{}.{}", dest, retention)) {
+                    let naivetimestamp =
+                        NaiveDateTime::parse_from_str(&re.replace(dir, ""), "%Y-%m-%d-%H-%M")
+                            .expect("no valid datetime format");
+                    let localtimestamp: DateTime<Local> =
+                        Local.from_local_datetime(&naivetimestamp).unwrap();
+                    let period = Local::now().signed_duration_since(localtimestamp);
+                    if period.num_seconds() < interval {
+                        is_needed = false
                     }
                 }
             }
@@ -131,7 +118,6 @@ fn date_to_file_suffix() -> String {
         now.hour(),
         now.minute(),
     )
-    .to_string()
 }
 
 fn retain_for_period(dest: &str, retention: &str, interval: i64, count: i64) {
@@ -190,27 +176,22 @@ fn prune_for_period(dest: &str, retention: &str, count: i64) {
     }
 }
 
-fn retain_rsync_backup(
-    dest: &str,
-    hourly: i64,
-    daily: i64,
-    weekly: i64,
-    monthly: i64,
-    yearly: i64,
-) {
-    let re = regex::Regex::new(r"^(([a-zA-Z][a-zA-Z_-]*)@)?([a-zA-Z][.a-zA-Z0-9_-]*):");
-    if re.expect("could not get compile regex").is_match(dest) {
-        println!(
-            "Rsync: Skipping backup retention for remote destination path! ({})",
-            dest
-        );
-        return;
+fn retain_rsync_backup(bup: &BackupConfig) {
+    for dest in &bup.dest {
+        let re = regex::Regex::new(r"^(([a-zA-Z][a-zA-Z_-]*)@)?([a-zA-Z][.a-zA-Z0-9_-]*):");
+        if re.expect("could not get compile regex").is_match(&dest) {
+            println!(
+                "Rsync: Skipping backup retention for remote destination path! ({})",
+                dest
+            );
+            return;
+        }
+        retain_for_period(&dest, "hourly", 3600, bup.keep_hourly);
+        retain_for_period(&dest, "daily", 3600 * 24, bup.keep_daily);
+        retain_for_period(&dest, "weekly", 3600 * 24 * 7, bup.keep_weekly);
+        retain_for_period(&dest, "monthly", 3600 * 24 * 30, bup.keep_monthly);
+        retain_for_period(&dest, "yearly", 3600 * 24 * 364, bup.keep_yearly);
     }
-    retain_for_period(dest, "hourly", 3600, hourly);
-    retain_for_period(dest, "daily", 3600 * 24, daily);
-    retain_for_period(dest, "weekly", 3600 * 24 * 7, weekly);
-    retain_for_period(dest, "monthly", 3600 * 24 * 30, monthly);
-    retain_for_period(dest, "yearly", 3600 * 24 * 364, yearly);
 }
 
 #[cfg(test)]

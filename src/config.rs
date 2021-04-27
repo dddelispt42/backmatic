@@ -1,6 +1,5 @@
 use chrono::Local;
 use clap::{crate_version, App, Arg};
-use regex::Regex;
 use std::fs;
 use std::process::Command;
 use yaml_rust::{Yaml, YamlLoader};
@@ -16,7 +15,6 @@ static DEFAULT_RETRYCOUNT: u32 = 23;
 pub struct Config {
     pub lock_file: String,
     pub config_file: String,
-    pub log_dir: String,
     pub threadpool_size: usize,
     pub retry_interval_sec: u64,
     pub retry_count: u32,
@@ -25,7 +23,10 @@ pub struct Config {
 
 #[derive(Clone, Debug)]
 pub struct BackupConfig {
+    pub buptype: String,
     pub comment: String,
+    pub logdir: String,
+    pub logfile: String,
     pub src: Vec<String>,
     pub dest: Vec<String>,
     pub password: Option<String>,
@@ -50,15 +51,6 @@ impl Config {
                     .value_name("FILE")
                     .required(false)
                     .help("define the backups to be executed")
-                    .takes_value(true),
-            )
-            .arg(
-                Arg::with_name("logdir")
-                    .short("l")
-                    .long("logdir")
-                    .value_name("DIRECTORY")
-                    .required(false)
-                    .help("define the directory to store log files")
                     .takes_value(true),
             )
             .arg(
@@ -95,28 +87,20 @@ impl Config {
                     .help("Sets the level of verbosity"),
             )
             .get_matches();
-        let cfg_file = String::from(
-            matches
-                .value_of("configfile")
-                .unwrap_or(DEFAULT_CONFIG_FILE)
-                .to_string(),
-        );
+        let cfg_file = matches
+            .value_of("configfile")
+            .unwrap_or(DEFAULT_CONFIG_FILE)
+            .to_string();
         let docs = Config::get_config(&cfg_file).expect("unable to read backup config file");
         match matches.occurrences_of("v") {
             0 => println!("No verbose info"),
             1 => println!("Some verbose info"),
             2 => println!("Tons of verbose info"),
-            3 | _ => println!("Don't be crazy"),
+            _ => println!("Don't be crazy"),
         }
         Config {
-            lock_file: String::from(DEFAULT_LOCK_FILE.to_string()),
+            lock_file: DEFAULT_LOCK_FILE.to_string(),
             config_file: cfg_file,
-            log_dir: String::from(
-                matches
-                    .value_of("logdir")
-                    .unwrap_or(DEFAULT_LOGDIR)
-                    .to_string(),
-            ),
             threadpool_size: matches
                 .value_of("threads")
                 .unwrap_or(&DEFAULT_THREADPOOLSIZE.to_string())
@@ -143,43 +127,31 @@ impl Config {
         Ok(docs)
     }
 
-    fn filenamify(input: &str) -> String {
-        let re = Regex::new("[!<>:\'\"/\\|?*+]").expect("Problem in RegEx.");
-        return re.replace_all(input, "_").to_string();
-    }
-
-    pub fn generate_logfilename(log_dir: &str, buptype: &str, src: &str, dest: &str) -> String {
-        let logstring: &str = &format!(
-            "{}-{}---{}_{}.log",
-            buptype,
-            src,
-            dest,
-            Local::now().format("%Y%m%d%H%M")
-        );
-        return String::from(&format!("{}/{}", log_dir, &Config::filenamify(logstring)));
-    }
-
     pub fn command_existing(cmd: &str) -> bool {
         match Command::new("test").arg("-x").arg(cmd).status() {
-            Ok(status) => return status.success(),
+            Ok(status) => status.success(),
             Err(err) => {
                 println!("{} not executable! - {}", cmd, err);
-                return false;
+                false
             }
         }
     }
 }
 
 impl BackupConfig {
-    pub fn new(cfg: &Yaml) -> BackupConfig {
+    pub fn new(cfg: &Yaml, buptype: &str) -> BackupConfig {
+        let logdir: &str = match cfg["logdir"].as_str() {
+            None => DEFAULT_LOGDIR,
+            Some(value) => value,
+        };
         BackupConfig {
+            buptype: buptype.to_string(),
             comment: cfg["comment"].as_str().unwrap_or("").to_string(),
             src: BackupConfig::yaml2string_list(&cfg["src"]),
             dest: BackupConfig::yaml2string_list(&cfg["dest"]),
-            password: match cfg["password"].as_str() {
-                None => None,
-                Some(value) => Some(value.to_string()),
-            },
+            logdir: logdir.to_string(),
+            logfile: BackupConfig::generate_logfilename(&logdir, buptype),
+            password: cfg["password"].as_str().map(|value| value.to_string()),
             exclude: BackupConfig::yaml2string_list(&cfg["exclude"]),
             keep_hourly: cfg["keep_hourly"].as_i64().unwrap_or(0),
             keep_daily: cfg["keep_daily"].as_i64().unwrap_or(0),
@@ -190,23 +162,33 @@ impl BackupConfig {
     }
     fn yaml2string_list(yaml: &Yaml) -> Vec<String> {
         let mut retval: Vec<String> = Vec::new();
-        if yaml.is_array() {
-            for value in yaml.as_vec().unwrap_or(&Vec::new()) {
+        if !yaml.is_null() && !yaml.is_badvalue() {
+            if yaml.is_array() {
+                for value in yaml.as_vec().unwrap_or(&Vec::new()) {
+                    retval.push(
+                        value
+                            .as_str()
+                            .expect("not a string value in yaml file")
+                            .to_string(),
+                    );
+                }
+            } else {
                 retval.push(
-                    value
-                        .as_str()
+                    yaml.as_str()
                         .expect("not a string value in yaml file")
                         .to_string(),
                 );
             }
-        } else {
-            retval.push(
-                yaml.as_str()
-                    .expect("not a string value in yaml file")
-                    .to_string(),
-            );
         }
         retval
+    }
+    fn generate_logfilename(log_dir: &str, buptype: &str) -> String {
+        let logstring: &str = &format!(
+            "backup-{}_{}.log",
+            buptype,
+            Local::now().format("%Y%m%d%H%M")
+        );
+        return String::from(&format!("{}/{}", log_dir, logstring));
     }
 }
 
