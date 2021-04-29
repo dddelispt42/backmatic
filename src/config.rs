@@ -130,7 +130,8 @@ impl Config {
             simplelog::Config::default(),
             simplelog::TerminalMode::Mixed,
             simplelog::ColorChoice::Auto,
-        );
+        )
+        .expect("cannot create a logger");
         log::debug!("Initialized debugger!");
     }
 

@@ -37,7 +37,7 @@ fn run_rsync_backup(cfg: &Config, bup: &BackupConfig) {
     for dest in &bup.dest {
         for _ in 1..cfg.retry_count {
             log::info!(
-                "Run {} backup ({}): \"{:?}\" --> \"{:?}\"",
+                "Start {} ({}): \"{:?}\" --> \"{:?}\"",
                 bup.buptype,
                 bup.comment,
                 bup.src,
@@ -59,11 +59,12 @@ fn run_rsync_backup(cfg: &Config, bup: &BackupConfig) {
             cmd.arg(dest);
             log::debug!("{} backup starting: Command={:?}", BUPTYPE, cmd);
             let output = cmd.output().expect("rsync - failed to execute process");
-            log::info!("End rsync backup ({}): {}", bup.comment, output.status);
             Config::log_output(&bup.logfile, &output);
             if !output.status.success() {
+                log::warn!("End rsync backup ({}): {}", bup.comment, output.status);
                 thread::sleep(std::time::Duration::from_secs(cfg.retry_interval_sec));
             } else {
+                log::info!("End rsync backup ({}): {}", bup.comment, output.status);
                 break;
             }
         }

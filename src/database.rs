@@ -24,7 +24,7 @@ fn run_database_backup(cfg: &Config, bup: &BackupConfig) {
     for dest in &bup.dest {
         for _ in 1..cfg.retry_count {
             log::info!(
-                "Run {} backup ({}): \"{:?}\" --> \"{:?}\"",
+                "Start {} ({}): \"{:?}\" --> \"{:?}\"",
                 bup.buptype,
                 bup.comment,
                 bup.src,

@@ -79,7 +79,7 @@ fn init_repo(logfile: &str, dest: &str, pw: &Option<String>) -> bool {
 fn run_borg_backup(bup: &BackupConfig) -> Result<(), ()> {
     for dest in &bup.dest {
         log::info!(
-            "Run {} backup ({}): \"{:?}\" --> \"{:?}\"",
+            "Start {} ({}): \"{:?}\" --> \"{:?}\"",
             bup.buptype,
             bup.comment,
             bup.src,
@@ -107,10 +107,11 @@ fn run_borg_backup(bup: &BackupConfig) -> Result<(), ()> {
         log::debug!("{} backup starting: Command={:?}", BUPTYPE, cmd);
         let output = cmd.output().expect("borg - failed to execute process");
         Config::log_output(&bup.logfile, &output);
-        log::info!("End borg backup ({}): {}", bup.comment, output.status);
         if !output.status.success() {
+            log::warn!("End borg backup ({}): {}", bup.comment, output.status);
             return Err(());
         }
+        log::info!("End borg backup ({}): {}", bup.comment, output.status);
     }
     Ok(())
 }
@@ -139,10 +140,11 @@ fn prune_borg_backup(bup: &BackupConfig) -> Result<(), ()> {
         log::debug!("{} backup - pruning starting: Command={:?}", BUPTYPE, cmd);
         let output = cmd.output().expect("borg - failed to execute process");
         Config::log_output(&bup.logfile, &output);
-        log::info!("End borg pruning: {}", output.status);
         if !output.status.success() {
+            log::warn!("End borg pruning: {}", output.status);
             return Err(());
         }
+        log::info!("End borg pruning: {}", output.status);
     }
     // TODO: verify backup or rely on TDD test <13-12-20, Heiko Riemer> //
     Ok(())
