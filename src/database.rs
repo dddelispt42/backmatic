@@ -19,6 +19,7 @@ pub fn run(cfg: &Config) {
 
 fn run_database_backup(cfg: &Config, bup: &BackupConfig) {
     if !Config::command_existing(BUPCMD) {
+        log::error!("{} not installed on machine!", BUPCMD);
         return;
     }
     for dest in &bup.dest {

@@ -46,6 +46,8 @@ pub fn run(cfg: &Config) {
                         }
                     }
                 }
+            } else {
+                log::error!("{} not installed on machine!", BUPCMD);
             }
         });
     }
