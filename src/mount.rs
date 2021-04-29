@@ -24,7 +24,7 @@ impl Mounter {
         }
     }
     pub fn mount(&self) -> Result<&str, &str> {
-        println!("Mounting {} at {}", self.uuid, self.mount);
+        log::info!("Mounting {} at {}", self.uuid, self.mount);
         if !std::path::Path::new(&self.mount).exists() {
             return Err("disk not available");
         }
@@ -42,7 +42,7 @@ impl Mounter {
         Ok(&self.mount)
     }
     pub fn umount(&self) -> Result<&str, &str> {
-        println!("Unmounting {} from {}", self.uuid, self.mount);
+        log::info!("Unmounting {} from {}", self.uuid, self.mount);
         if self.is_mounted {
             Command::new("umount")
                 .arg(&self.mount)

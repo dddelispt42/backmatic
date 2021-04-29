@@ -13,6 +13,7 @@ pub fn run(cfg: &Config) {
     let pool = ThreadPool::new(cfg.threadpool_size);
     for item in cfg.doc[BUPTYPE].as_vec().unwrap_or(&Vec::new()) {
         let my_item = item.clone();
+        log::debug!("YAML item: {:?}", my_item);
         let my_cfg = cfg.clone();
         pool.execute(move || {
             // TODO sanitize all inputs from the yaml files
@@ -20,6 +21,7 @@ pub fn run(cfg: &Config) {
             // TODO: check if user can mount - or skip
             // let mounter = Mounter::new(uuid, None);
             let bupcfg = BackupConfig::new(&my_item, BUPTYPE);
+            log::debug!("BackupConfig: {:?}", bupcfg);
             run_rsync_backup(&my_cfg, &bupcfg);
             retain_rsync_backup(&bupcfg);
             // TODO: skip in case of Windows and for bad file system
@@ -34,9 +36,12 @@ fn run_rsync_backup(cfg: &Config, bup: &BackupConfig) {
     }
     for dest in &bup.dest {
         for _ in 1..cfg.retry_count {
-            println!(
+            log::info!(
                 "Run {} backup ({}): \"{:?}\" --> \"{:?}\"",
-                bup.buptype, bup.comment, bup.src, dest,
+                bup.buptype,
+                bup.comment,
+                bup.src,
+                dest,
             );
             let mut cmd = Command::new("rsync");
             cmd.arg("-avHAXEh")
@@ -51,11 +56,10 @@ fn run_rsync_backup(cfg: &Config, bup: &BackupConfig) {
             for src in &bup.src {
                 cmd.arg(src);
             }
-            let output = cmd
-                .arg(dest)
-                .output()
-                .expect("rsync - failed to execute process");
-            println!("End rsync backup ({}): {}", bup.comment, output.status);
+            cmd.arg(dest);
+            log::debug!("{} backup starting: Command={:?}", BUPTYPE, cmd);
+            let output = cmd.output().expect("rsync - failed to execute process");
+            log::info!("End rsync backup ({}): {}", bup.comment, output.status);
             Config::log_output(&bup.logfile, &output);
             if !output.status.success() {
                 thread::sleep(std::time::Duration::from_secs(cfg.retry_interval_sec));
@@ -95,7 +99,7 @@ fn needs_retention(dest: &str, retention: &str, interval: i64) -> bool {
         }
     }
     if is_needed {
-        println!("Retain {} backup ({})!", retention, dest);
+        log::info!("Retain {} backup ({})!", retention, dest);
     }
     is_needed
 }
@@ -124,10 +128,18 @@ fn retain_for_period(dest: &str, retention: &str, interval: i64, count: i64) {
             retention,
             date_to_file_suffix()
         ));
+        log::debug!(
+            "{} backup retention starting ({}): Command={:?}",
+            BUPTYPE,
+            dest,
+            cmd
+        );
         let output = cmd.output().expect("cp - failed to execute process");
-        println!(
+        log::info!(
             "Retained {} backup ({}): {}",
-            retention, dest, output.status
+            retention,
+            dest,
+            output.status
         );
     }
     prune_for_period(dest, retention, count);
@@ -159,10 +171,18 @@ fn prune_for_period(dest: &str, retention: &str, count: i64) {
         for bupdir in bup_list {
             let mut cmd = Command::new("rm");
             cmd.arg("-rf").arg(&bupdir);
+            log::debug!(
+                "{} backup pruning starting ({}): Command={:?}",
+                BUPTYPE,
+                dest,
+                cmd
+            );
             let output = cmd.output().expect("rm - failed to execute process");
-            println!(
+            log::info!(
                 "Deleted {} backup ({}): {}",
-                retention, bupdir, output.status
+                retention,
+                bupdir,
+                output.status
             );
         }
     }
@@ -172,7 +192,7 @@ fn retain_rsync_backup(bup: &BackupConfig) {
     for dest in &bup.dest {
         let re = regex::Regex::new(r"^(([a-zA-Z][a-zA-Z_-]*)@)?([a-zA-Z][.a-zA-Z0-9_-]*):");
         if re.expect("could not get compile regex").is_match(&dest) {
-            println!(
+            log::info!(
                 "Rsync: Skipping backup retention for remote destination path! ({})",
                 dest
             );

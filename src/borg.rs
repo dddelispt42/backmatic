@@ -11,6 +11,7 @@ pub fn run(cfg: &Config) {
     let pool = ThreadPool::new(cfg.threadpool_size);
     for item in cfg.doc["borg"].as_vec().unwrap_or(&Vec::new()) {
         let my_item = item.clone();
+        log::debug!("YAML item: {:?}", my_item);
         let my_cfg = cfg.clone();
         pool.execute(move || {
             // TODO sanitize all inputs from the yaml files
@@ -18,11 +19,17 @@ pub fn run(cfg: &Config) {
             // TODO: check if user can mount - or skip
             // let mounter = Mounter::new(uuid, None);
             let bupcfg = BackupConfig::new(&my_item, BUPTYPE);
+            log::debug!("BackupConfig: {:?}", bupcfg);
             if Config::command_existing(BUPCMD) {
                 for _ in 1..my_cfg.retry_count {
                     match run_borg_backup(&bupcfg) {
                         Ok(_) => {}
                         Err(_) => {
+                            log::warn!(
+                                "{} backup ({}) failed - retrying!",
+                                BUPTYPE,
+                                bupcfg.comment
+                            );
                             thread::sleep(time::Duration::from_secs(my_cfg.retry_interval_sec));
                             continue;
                         }
@@ -30,6 +37,11 @@ pub fn run(cfg: &Config) {
                     match prune_borg_backup(&bupcfg) {
                         Ok(_) => break,
                         Err(_) => {
+                            log::warn!(
+                                "{} backup ({}) pruning failed - retrying!",
+                                BUPTYPE,
+                                bupcfg.comment
+                            );
                             thread::sleep(time::Duration::from_secs(my_cfg.retry_interval_sec));
                         }
                     }
@@ -43,6 +55,7 @@ pub fn run(cfg: &Config) {
 fn is_repo_existing(dest: &str) -> bool {
     let mut cmd = Command::new("rsync");
     cmd.arg(&dest);
+    log::debug!("Check if repo exist: Command={:?}", cmd);
     let output = cmd.output().expect("cannot check if file exists");
     output.status.success()
 }
@@ -57,7 +70,7 @@ fn init_repo(logfile: &str, dest: &str, pw: &Option<String>) -> bool {
         cmd.arg("-e").arg("none");
     }
     cmd.arg(dest);
-    println!("Repo not existing - calling: {:?}", cmd);
+    log::info!("{} repo not existing - calling: {:?}", BUPTYPE, cmd);
     let output = cmd.output().expect("borg - failed to init repo");
     Config::log_output(&logfile, &output);
     output.status.success()
@@ -65,11 +78,15 @@ fn init_repo(logfile: &str, dest: &str, pw: &Option<String>) -> bool {
 
 fn run_borg_backup(bup: &BackupConfig) -> Result<(), ()> {
     for dest in &bup.dest {
-        println!(
+        log::info!(
             "Run {} backup ({}): \"{:?}\" --> \"{:?}\"",
-            bup.buptype, bup.comment, bup.src, dest,
+            bup.buptype,
+            bup.comment,
+            bup.src,
+            dest,
         );
         if !is_repo_existing(&dest) && !init_repo(&bup.logfile, &dest, &bup.password) {
+            log::error!("{} repo {} not initialized!", BUPTYPE, dest);
             return Err(());
         }
         let mut cmd = Command::new(BUPCMD);
@@ -87,9 +104,10 @@ fn run_borg_backup(bup: &BackupConfig) -> Result<(), ()> {
         for src in &bup.src {
             cmd.arg(src);
         }
+        log::debug!("{} backup starting: Command={:?}", BUPTYPE, cmd);
         let output = cmd.output().expect("borg - failed to execute process");
         Config::log_output(&bup.logfile, &output);
-        println!("End borg backup ({}): {}", bup.comment, output.status);
+        log::info!("End borg backup ({}): {}", bup.comment, output.status);
         if !output.status.success() {
             return Err(());
         }
@@ -99,7 +117,7 @@ fn run_borg_backup(bup: &BackupConfig) -> Result<(), ()> {
 
 fn prune_borg_backup(bup: &BackupConfig) -> Result<(), ()> {
     for dest in &bup.dest {
-        println!("Prune {} backup: \"{}\"", BUPTYPE, dest);
+        log::info!("Prune {} backup: \"{}\"", BUPTYPE, dest);
         let mut cmd = Command::new(BUPCMD);
         if let Some(pw) = &bup.password {
             cmd.env("BORG_PASSPHRASE", OsStr::new(&pw));
@@ -118,9 +136,10 @@ fn prune_borg_backup(bup: &BackupConfig) -> Result<(), ()> {
             .arg("-y")
             .arg(bup.keep_yearly.to_string())
             .arg(dest);
+        log::debug!("{} backup - pruning starting: Command={:?}", BUPTYPE, cmd);
         let output = cmd.output().expect("borg - failed to execute process");
         Config::log_output(&bup.logfile, &output);
-        println!("End borg pruning: {}", output.status);
+        log::info!("End borg pruning: {}", output.status);
         if !output.status.success() {
             return Err(());
         }

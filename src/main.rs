@@ -7,42 +7,49 @@ mod mount;
 mod restic;
 mod rsync;
 
-pub struct BackApp {
+pub struct Backmatic {
     conf: config::Config,
     _instance: SingleInstance,
 }
 
-impl BackApp {
-    pub fn new() -> BackApp {
+impl Backmatic {
+    pub fn new() -> Backmatic {
         let cfg = config::Config::new();
-        // println!("Settings: {:?}", cfg);
+        log::debug!("Settings: {:?}", cfg);
         let instance = SingleInstance::new(&cfg.lock_file)
             .expect("Cannot create a lockfile to guarantee single application use.");
         if !instance.is_single() {
             panic!("Another backup is running! Terminating...")
         }
-        BackApp {
+        Backmatic {
             conf: cfg,
             _instance: instance,
         }
     }
     pub fn run(&self) {
+        log::debug!("Running rsync backups...");
         rsync::run(&self.conf);
+        log::debug!("Running borg backups...");
         borg::run(&self.conf);
+        log::debug!("Running restic backups...");
         restic::run(&self.conf);
+        log::debug!("Running database backups...");
         database::run(&self.conf);
     }
 }
 
-impl Default for BackApp {
+impl Default for Backmatic {
     fn default() -> Self {
         Self::new()
     }
 }
 
 fn main() {
-    let app = BackApp::new();
+    log::debug!("Starting application...");
+    let app = Backmatic::new();
+    log::debug!("Created application object");
     app.run();
+    log::debug!("... terminating application.");
 }
 
 #[cfg(test)]
@@ -52,9 +59,9 @@ mod tests {
     #[test]
     #[should_panic]
     fn test_multiple_instances() {
-        let app = BackApp::new();
+        let app = Backmatic::new();
         assert!(app._instance.is_single());
-        let app2 = BackApp::new();
+        let app2 = Backmatic::new();
         assert!(!app2._instance.is_single());
     }
 }

@@ -1,5 +1,6 @@
 use chrono::Local;
 use clap::{crate_version, App, Arg};
+use log::LevelFilter;
 use regex::Regex;
 use std::fs;
 use std::fs::OpenOptions;
@@ -8,7 +9,8 @@ use std::process::{Command, Output};
 use yaml_rust::{Yaml, YamlLoader};
 
 static DEFAULT_LOCK_FILE: &str = "/tmp/backmatic.lock";
-static DEFAULT_CONFIG_FILE: &str = "/home/heiko/backups.yml";
+// TODO: change to XDG config dir
+static DEFAULT_CONFIG_FILE: &str = "/home/heiko/.config/backmatic.yml";
 static DEFAULT_LOGDIR: &str = "/tmp";
 static DEFAULT_THREADPOOLSIZE: usize = 4;
 static DEFAULT_RETRYINTERVAL: u64 = 3600;
@@ -96,10 +98,9 @@ impl Config {
             .to_string();
         let docs = Config::get_config(&cfg_file).expect("unable to read backup config file");
         match matches.occurrences_of("v") {
-            0 => println!("No verbose info"),
-            1 => println!("Some verbose info"),
-            2 => println!("Tons of verbose info"),
-            _ => println!("Don't be crazy"),
+            0 => Config::configure_logging(LevelFilter::Warn),
+            1 => Config::configure_logging(LevelFilter::Info),
+            _ => Config::configure_logging(LevelFilter::Debug),
         }
         Config {
             lock_file: DEFAULT_LOCK_FILE.to_string(),
@@ -123,6 +124,16 @@ impl Config {
         }
     }
 
+    fn configure_logging(level: LevelFilter) {
+        simplelog::TermLogger::init(
+            level,
+            simplelog::Config::default(),
+            simplelog::TerminalMode::Mixed,
+            simplelog::ColorChoice::Auto,
+        );
+        log::debug!("Initialized debugger!");
+    }
+
     fn get_config(filename: &str) -> Result<Vec<Yaml>, &str> {
         let s = fs::read_to_string(filename).expect("Cannot read backup configuration file.");
         // TODO: use yaml_validator and define schema to check against <07-12-20, Heiko Riemer> //
@@ -134,7 +145,7 @@ impl Config {
         match Command::new("test").arg("-x").arg(cmd).status() {
             Ok(status) => status.success(),
             Err(err) => {
-                println!("{} not executable! - {}", cmd, err);
+                log::error!("{} not executable! - {}", cmd, err);
                 false
             }
         }
@@ -153,7 +164,6 @@ impl Config {
             file.write_all(&output.stderr)
                 .expect("logfile - stderr cannot be written");
         }
-
         if !output.status.success() {
             std::fs::rename(
                 &logfile,
