@@ -125,9 +125,14 @@ impl Config {
     }
 
     fn configure_logging(level: LevelFilter) {
+        let config = simplelog::ConfigBuilder::new()
+            .set_time_to_local(true)
+            .set_thread_mode(simplelog::ThreadLogMode::Both)
+            .build();
         simplelog::TermLogger::init(
             level,
-            simplelog::Config::default(),
+            config,
+            // simplelog::Config::default(),
             simplelog::TerminalMode::Mixed,
             simplelog::ColorChoice::Auto,
         )

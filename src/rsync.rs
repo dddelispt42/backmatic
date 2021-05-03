@@ -32,7 +32,6 @@ pub fn run(cfg: &Config) {
 
 fn run_rsync_backup(cfg: &Config, bup: &BackupConfig) {
     if !Config::command_existing(BUPCMD) {
-        log::error!("{} not installed on machine!", BUPCMD);
         return;
     }
     for dest in &bup.dest {
@@ -62,10 +61,9 @@ fn run_rsync_backup(cfg: &Config, bup: &BackupConfig) {
             let output = cmd.output().expect("rsync - failed to execute process");
             Config::log_output(&bup.logfile, &output);
             if !output.status.success() {
-                log::warn!("End rsync backup ({}): {}", bup.comment, output.status);
+                log::info!("End rsync backup ({}): {}", bup.comment, output.status);
                 thread::sleep(std::time::Duration::from_secs(cfg.retry_interval_sec));
             } else {
-                log::info!("End rsync backup ({}): {}", bup.comment, output.status);
                 break;
             }
         }
