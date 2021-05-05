@@ -27,6 +27,13 @@ pub struct Config {
 }
 
 #[derive(Clone, Debug)]
+pub struct MountConfig {
+    pub mountpoint: Option<String>,
+    pub uuid: Option<String>,
+    pub password: Option<String>,
+}
+
+#[derive(Clone, Debug)]
 pub struct BackupConfig {
     pub buptype: String,
     pub comment: String,
@@ -34,6 +41,7 @@ pub struct BackupConfig {
     pub logfile: String,
     pub src: Vec<String>,
     pub dest: Vec<String>,
+    pub destmount: Option<MountConfig>,
     pub password: Option<String>,
     pub exclude: Vec<String>,
     pub keep_hourly: i64,
@@ -180,6 +188,16 @@ impl Config {
     }
 }
 
+impl MountConfig {
+    pub fn new(cfg: &Yaml) -> MountConfig {
+        MountConfig {
+            mountpoint: cfg["mountpoint"].as_str().map(|value| value.to_string()),
+            uuid: cfg["uuid"].as_str().map(|value| value.to_string()),
+            password: cfg["password"].as_str().map(|value| value.to_string()),
+        }
+    }
+}
+
 impl BackupConfig {
     pub fn new(cfg: &Yaml, buptype: &str) -> BackupConfig {
         let logdir: &str = match cfg["logdir"].as_str() {
@@ -187,11 +205,16 @@ impl BackupConfig {
             Some(value) => value,
         };
         let comment: &str = cfg["comment"].as_str().unwrap_or("");
+        let mut destmount: Option<MountConfig> = None;
+        if !cfg["destmount"].is_badvalue() && !cfg["destmount"].is_null() {
+            destmount = Some(MountConfig::new(&cfg["destmount"]));
+        }
         BackupConfig {
             buptype: buptype.to_string(),
             comment: comment.to_string(),
             src: BackupConfig::yaml2string_list(&cfg["src"]),
             dest: BackupConfig::yaml2string_list(&cfg["dest"]),
+            destmount,
             logdir: logdir.to_string(),
             logfile: BackupConfig::generate_logfilename(&logdir, buptype, comment),
             password: cfg["password"].as_str().map(|value| value.to_string()),

@@ -1,4 +1,5 @@
 use crate::config::{BackupConfig, Config};
+use crate::mount::Mounter;
 use std::ffi::OsStr;
 use std::process::Command;
 use std::{thread, time};
@@ -17,34 +18,43 @@ pub fn run(cfg: &Config) {
             // TODO sanitize all inputs from the yaml files
             // TODO: mount if "mount" key exist and user has permissions (see borg)
             // TODO: check if user can mount - or skip
-            // let mounter = Mounter::new(uuid, None);
             let bupcfg = BackupConfig::new(&my_item, BUPTYPE);
             log::debug!("BackupConfig: {:?}", bupcfg);
             if Config::command_existing(BUPCMD) {
-                for _ in 1..my_cfg.retry_count {
-                    match run_borg_backup(&bupcfg) {
-                        Ok(_) => {}
-                        Err(_) => {
-                            log::warn!(
-                                "{} backup ({}) failed - retrying!",
-                                BUPTYPE,
-                                bupcfg.comment
-                            );
-                            thread::sleep(time::Duration::from_secs(my_cfg.retry_interval_sec));
-                            continue;
+                let mounter = Mounter::new(&bupcfg.destmount);
+                match mounter.mount() {
+                    Ok(_) => {
+                        for _ in 1..my_cfg.retry_count {
+                            match run_borg_backup(&bupcfg) {
+                                Ok(_) => {}
+                                Err(_) => {
+                                    log::warn!(
+                                        "{} backup ({}) failed - retrying!",
+                                        BUPTYPE,
+                                        bupcfg.comment
+                                    );
+                                    thread::sleep(time::Duration::from_secs(
+                                        my_cfg.retry_interval_sec,
+                                    ));
+                                    continue;
+                                }
+                            }
+                            match prune_borg_backup(&bupcfg) {
+                                Ok(_) => break,
+                                Err(_) => {
+                                    log::warn!(
+                                        "{} backup ({}) pruning failed - retrying!",
+                                        BUPTYPE,
+                                        bupcfg.comment
+                                    );
+                                    thread::sleep(time::Duration::from_secs(
+                                        my_cfg.retry_interval_sec,
+                                    ));
+                                }
+                            }
                         }
                     }
-                    match prune_borg_backup(&bupcfg) {
-                        Ok(_) => break,
-                        Err(_) => {
-                            log::warn!(
-                                "{} backup ({}) pruning failed - retrying!",
-                                BUPTYPE,
-                                bupcfg.comment
-                            );
-                            thread::sleep(time::Duration::from_secs(my_cfg.retry_interval_sec));
-                        }
-                    }
+                    Err(why) => log::error!("Could not mount disk: {}", why),
                 }
             } else {
                 log::error!("{} not installed on machine!", BUPCMD);

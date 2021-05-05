@@ -61,9 +61,10 @@ fn run_rsync_backup(cfg: &Config, bup: &BackupConfig) {
             let output = cmd.output().expect("rsync - failed to execute process");
             Config::log_output(&bup.logfile, &output);
             if !output.status.success() {
-                log::info!("End rsync backup ({}): {}", bup.comment, output.status);
+                log::warn!("End rsync backup ({}): {}", bup.comment, output.status);
                 thread::sleep(std::time::Duration::from_secs(cfg.retry_interval_sec));
             } else {
+                log::info!("End rsync backup ({}): {}", bup.comment, output.status);
                 break;
             }
         }

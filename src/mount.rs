@@ -1,63 +1,96 @@
+use crate::config::MountConfig;
 use std::process::Command;
 
 #[derive(Clone, Debug)]
 pub struct Mounter {
-    uuid: String,
-    mount: String,
-    pw: Option<String>,
     is_mounted: bool,
-    _device: String,
+    device: String,
+    is_used: bool,
+    mountpoint: String,
+    is_luks: bool,
+    pw: String,
 }
 
 impl Mounter {
-    pub fn new(uuid: &str, pw: Option<String>) -> Mounter {
-        let mut mount_point = String::from("/mnt/backapp");
-        mount_point.push_str(uuid);
-        let mut device = String::from("/dev/disk/by-uuid/");
-        device.push_str(uuid);
+    pub fn new(config: &Option<MountConfig>) -> Mounter {
+        let mut is_used = false;
+        let mut is_luks = false;
+        let mut device: String = String::from("");
+        let mut mountpoint: String = String::from("");
+        let mut pw: String = String::from("");
+
+        if let Some(config) = &config {
+            if let Some(uuid) = &config.uuid {
+                device = String::from("/dev/disk/by-uuid/") + &uuid;
+                if let Some(mp) = &config.mountpoint {
+                    mountpoint = mp.to_string();
+                } else {
+                    mountpoint = String::from("/mnt/backapp/") + &uuid;
+                }
+                is_used = true;
+                if let Some(password) = &config.password {
+                    is_luks = true;
+                    pw = password.to_string();
+                }
+            }
+        }
         Mounter {
-            uuid: String::from(uuid),
-            mount: mount_point,
-            pw,
             is_mounted: false,
-            _device: device,
+            device,
+            is_used,
+            mountpoint,
+            is_luks,
+            pw,
         }
     }
-    pub fn mount(&self) -> Result<&str, &str> {
-        log::info!("Mounting {} at {}", self.uuid, self.mount);
-        if !std::path::Path::new(&self.mount).exists() {
-            return Err("disk not available");
+    pub fn mount(&self) -> Result<(), &str> {
+        if !self.is_used {
+            return Ok(());
         }
-        // TODO:cryptosetup - luksOpen optional  <03-01-21, Heiko Riemer> //
-        Command::new("mkdir")
-            .arg("-p")
-            .arg(&self.mount)
-            .output()
-            .expect("unable to create mount point");
-        Command::new("mount")
-            .arg(&self._device)
-            .arg(&self.mount)
-            .output()
-            .expect("unable to mount device");
-        Ok(&self.mount)
+        if !self.is_mounted {
+            log::info!("Mounting {} at {}", self.device, self.mountpoint);
+            if !std::path::Path::new(&self.device).exists() {
+                log::error!("Device not existing: {}", self.device);
+                return Err("device not found");
+            }
+            if !std::path::Path::new(&self.mountpoint).exists() {
+                match std::fs::create_dir_all(&self.mountpoint) {
+                    Ok(_) => log::warn!("Create mountpoint: {}", self.mountpoint),
+                    Err(_) => {
+                        log::error!("Failed to create mountpoint: {}", self.mountpoint);
+                        return Err("Mountpoint cannot be created!");
+                    }
+                }
+            }
+            // TODO: ok, device and mp exist, check luks and do the mount
+        } else {
+            log::warn!(
+                "Device {} already mounted (duplicate mount request)!",
+                self.device
+            );
+        }
+        Ok(())
     }
-    pub fn umount(&self) -> Result<&str, &str> {
-        log::info!("Unmounting {} from {}", self.uuid, self.mount);
+    pub fn umount(&self) -> Result<(), &str> {
+        log::info!("Unmounting {} from {}", self.device, self.mountpoint);
         if self.is_mounted {
-            Command::new("umount")
-                .arg(&self.mount)
-                .output()
-                .expect("unable to umount device");
+            // TODO: cryptosetup - luksClose optional  <03-01-21, Heiko Riemer> //
+            // Command::new("umount")
+            //     .arg(&self.mountpoint)
+            //     .output()
+            //     .expect("unable to umount device");
         }
-        // TODO:cryptosetup - luksClose optional  <03-01-21, Heiko Riemer> //
-        Ok(&self.mount)
+        Ok(())
     }
 }
 
 impl Drop for Mounter {
     fn drop(&mut self) {
         if self.is_mounted {
-            self.umount().expect("unmounting failed");
+            match self.umount() {
+                Ok(_) => log::info!("Umount {}", self.device),
+                Err(_) => log::warn!("Umount failed on {}", self.device),
+            }
         }
     }
 }
