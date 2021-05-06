@@ -1,4 +1,5 @@
 use single_instance::SingleInstance;
+use std::{thread, time};
 
 mod borg;
 mod config;
@@ -27,14 +28,23 @@ impl Backmatic {
         }
     }
     pub fn run(&self) {
-        log::debug!("Running rsync backups...");
-        rsync::run(&self.conf);
-        log::debug!("Running borg backups...");
-        borg::run(&self.conf);
-        log::debug!("Running restic backups...");
-        restic::run(&self.conf);
-        log::debug!("Running database backups...");
-        database::run(&self.conf);
+        loop {
+            log::debug!("Running rsync backups...");
+            rsync::run(&self.conf);
+            log::debug!("Running borg backups...");
+            borg::run(&self.conf);
+            log::debug!("Running restic backups...");
+            restic::run(&self.conf);
+            log::debug!("Running database backups...");
+            database::run(&self.conf);
+            if self.conf.cycle_time == 0 {
+                log::info!("... terminating!");
+                break;
+            } else {
+                log::info!("Repeat after {}sec!", self.conf.cycle_time);
+                thread::sleep(time::Duration::from_secs(self.conf.cycle_time));
+            }
+        }
     }
 }
 

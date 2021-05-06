@@ -15,6 +15,7 @@ static DEFAULT_LOGDIR: &str = "/tmp";
 static DEFAULT_THREADPOOLSIZE: usize = 4;
 static DEFAULT_RETRYINTERVAL: u64 = 3600;
 static DEFAULT_RETRYCOUNT: u32 = 23;
+static DEFAULT_REPEATTIME: u64 = 3600;
 
 #[derive(Clone, Debug)]
 pub struct Config {
@@ -24,6 +25,7 @@ pub struct Config {
     pub retry_interval_sec: u64,
     pub retry_count: u32,
     pub doc: Yaml,
+    pub cycle_time: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -94,6 +96,13 @@ impl Config {
                     .takes_value(true),
             )
             .arg(
+                Arg::with_name("continuous")
+                    .short("C")
+                    .long("continuous")
+                    .help("run endlessly until aborted")
+                    .required(false),
+            )
+            .arg(
                 Arg::with_name("v")
                     .short("v")
                     .multiple(true)
@@ -129,6 +138,10 @@ impl Config {
                 .parse::<u32>()
                 .unwrap_or(DEFAULT_RETRYCOUNT),
             doc: docs[0].clone(),
+            cycle_time: match matches.is_present("continuous") {
+                true => DEFAULT_REPEATTIME,
+                false => 0,
+            },
         }
     }
 
