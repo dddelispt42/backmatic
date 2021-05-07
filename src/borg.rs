@@ -111,7 +111,7 @@ fn run_borg_backup(bup: &BackupConfig) -> Result<(), ()> {
         }
         cmd.arg(&format!(
             "{}::{} {}",
-            dest, bup.comment, r"{user}@{hostname}_{now:%Y-%m-%d_%H-%M}"
+            dest, BackupConfig::filenamify(&bup.comment), r"{user}@{hostname}_{now:%Y-%m-%d_%H-%M}"
         ));
         for src in &bup.src {
             cmd.arg(src);

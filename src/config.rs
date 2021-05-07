@@ -262,7 +262,7 @@ impl BackupConfig {
         retval
     }
 
-    fn filenamify(input: &str) -> String {
+    pub fn filenamify(input: &str) -> String {
         let re = Regex::new("[!<> :\'\"/\\|?*+]").expect("Problem in RegEx.");
         return re.replace_all(input, "_").to_string();
     }
