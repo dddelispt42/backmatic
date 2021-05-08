@@ -4,6 +4,7 @@ use std::process::Command;
 #[derive(Clone, Debug)]
 pub struct Mounter {
     is_mounted: bool,
+    uuid: String,
     device: String,
     is_used: bool,
     mountpoint: String,
@@ -15,12 +16,14 @@ impl Mounter {
     pub fn new(config: &Option<MountConfig>) -> Mounter {
         let mut is_used = false;
         let mut is_luks = false;
+        let mut uuid: String = String::from("");
         let mut device: String = String::from("");
         let mut mountpoint: String = String::from("");
         let mut pw: String = String::from("");
 
         if let Some(config) = &config {
-            if let Some(uuid) = &config.uuid {
+            if let Some(id) = &config.uuid {
+                uuid = id.to_string();
                 device = String::from("/dev/disk/by-uuid/") + &uuid;
                 if let Some(mp) = &config.mountpoint {
                     mountpoint = mp.to_string();
@@ -36,6 +39,7 @@ impl Mounter {
         }
         Mounter {
             is_mounted: false,
+            uuid,
             device,
             is_used,
             mountpoint,
@@ -43,7 +47,7 @@ impl Mounter {
             pw,
         }
     }
-    pub fn mount(&self) -> Result<(), &str> {
+    pub fn mount(&mut self) -> Result<(), &str> {
         if !self.is_used {
             return Ok(());
         }
@@ -62,7 +66,26 @@ impl Mounter {
                     }
                 }
             }
-            // TODO: ok, device and mp exist, check luks and do the mount
+            let mut mp = String::from(&self.mountpoint);
+            if self.is_luks {
+                let mut cmd = Command::new(format!("echo {} | cryptsetup luksOpen {} {}", self.pw, self.device, self.uuid));
+                log::error!("Cryptsetup cmd: {:?}", cmd);
+                let output = cmd.output().expect("unable to map crypto device");
+                if !output.status.success() {
+                    return Err("cryptsetup luksOpen failed");
+                }
+                mp = String::from("/dev/mapper/");
+                mp.push_str(&self.uuid)
+            }
+            let mut cmd = Command::new("mount");
+                cmd.arg(&self.device)
+                .arg(mp);
+            log::debug!("Mount cmd: {:?}", cmd);
+            let output = cmd.output().expect("unable to mount device");
+            if !output.status.success() {
+                return Err("mounting disk failed");
+            }
+            self.is_mounted = true;
         } else {
             log::warn!(
                 "Device {} already mounted (duplicate mount request)!",
@@ -74,11 +97,20 @@ impl Mounter {
     pub fn umount(&self) -> Result<(), &str> {
         log::info!("Unmounting {} from {}", self.device, self.mountpoint);
         if self.is_mounted {
-            // TODO: cryptosetup - luksClose optional  <03-01-21, Heiko Riemer> //
-            // Command::new("umount")
-            //     .arg(&self.mountpoint)
-            //     .output()
-            //     .expect("unable to umount device");
+            let mut cmd = Command::new("umount");
+            cmd.arg(&self.mountpoint);
+            let output = cmd.output().expect("unable to umount device");
+            if !output.status.success() {
+                return Err("unmounting disk failed");
+            }
+            if self.is_luks {
+                let mut cmd = Command::new(format!("cryptsetup luksClose {}", self.uuid));
+                log::error!("Cryptsetup cmd: {:?}", cmd);
+                let output = cmd.output().expect("unable to unmap crypto device");
+                if !output.status.success() {
+                    return Err("cryptsetup unmapping device failed");
+                }
+            }
         }
         Ok(())
     }
@@ -88,7 +120,7 @@ impl Drop for Mounter {
     fn drop(&mut self) {
         if self.is_mounted {
             match self.umount() {
-                Ok(_) => log::info!("Umount {}", self.device),
+                Ok(_) => log::debug!("Umount {} - Mounter destructor", self.device),
                 Err(_) => log::warn!("Umount failed on {}", self.device),
             }
         }

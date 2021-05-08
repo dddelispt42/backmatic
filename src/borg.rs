@@ -21,7 +21,7 @@ pub fn run(cfg: &Config) {
             let bupcfg = BackupConfig::new(&my_item, BUPTYPE);
             log::debug!("BackupConfig: {:?}", bupcfg);
             if Config::command_existing(BUPCMD) {
-                let mounter = Mounter::new(&bupcfg.destmount);
+                let mut mounter = Mounter::new(&bupcfg.destmount);
                 match mounter.mount() {
                     Ok(_) => {
                         for _ in 1..my_cfg.retry_count {

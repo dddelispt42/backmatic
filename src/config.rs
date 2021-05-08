@@ -158,7 +158,7 @@ impl Config {
             simplelog::ColorChoice::Auto,
         )
         .expect("cannot create a logger");
-        log::debug!("Initialized debugger!");
+        log::debug!("Initialized logger!");
     }
 
     fn get_config(filename: &str) -> Result<Vec<Yaml>, &str> {
