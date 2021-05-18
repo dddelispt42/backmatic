@@ -166,6 +166,7 @@ impl Config {
     fn get_config(filename: &str) -> Result<Vec<Yaml>, &str> {
         let s = fs::read_to_string(filename).expect("Cannot read backup configuration file.");
         // TODO: use yaml_validator and define schema to check against <07-12-20, Heiko Riemer> //
+        // TODO sanitize all inputs from the yaml files
         let docs = YamlLoader::load_from_str(&s).expect("Cannot load deserialize yaml content.");
         Ok(docs)
     }

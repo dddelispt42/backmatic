@@ -15,9 +15,6 @@ pub fn run(cfg: &Config) {
         log::debug!("YAML item: {:?}", my_item);
         let my_cfg = cfg.clone();
         pool.execute(move || {
-            // TODO sanitize all inputs from the yaml files
-            // TODO: mount if "mount" key exist and user has permissions (see borg)
-            // TODO: check if user can mount - or skip
             let bupcfg = BackupConfig::new(&my_item, BUPTYPE);
             log::debug!("BackupConfig: {:?}", bupcfg);
             if Config::command_existing(BUPCMD) {
@@ -54,7 +51,7 @@ pub fn run(cfg: &Config) {
                             }
                         }
                     }
-                    Err(why) => log::error!("Could not mount disk: {}", why),
+                    Err(_) => {},
                 }
             } else {
                 log::error!("{} not installed on machine!", BUPCMD);
@@ -158,7 +155,6 @@ fn prune_borg_backup(bup: &BackupConfig) -> Result<(), ()> {
         }
         log::info!("End borg pruning: {}", output.status);
     }
-    // TODO: verify backup or rely on TDD test <13-12-20, Heiko Riemer> //
     Ok(())
 }
 

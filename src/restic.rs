@@ -1,4 +1,5 @@
 use crate::config::{BackupConfig, Config};
+use crate::mount::Mounter;
 use threadpool::ThreadPool;
 
 static BUPTYPE: &str = "restic";
@@ -10,13 +11,19 @@ pub fn run(cfg: &Config) {
         let my_item = item.clone();
         let my_cfg = cfg.clone();
         pool.execute(move || {
-            // TODO sanitize all inputs from the yaml files
-            // TODO: mount if "mount" key exist (see borg)
-            // TODO: check if user can mount - or skip
-            // let mounter = Mounter::new(uuid, None);
             let bupcfg = BackupConfig::new(&my_item, BUPTYPE);
-            run_restic_backup(&my_cfg, &bupcfg);
-            // TODO: skip in case of Windows and for bad file system
+            log::debug!("BackupConfig: {:?}", bupcfg);
+            if Config::command_existing(BUPCMD) {
+                let mut mounter = Mounter::new(&bupcfg.destmount);
+                match mounter.mount() {
+                    Ok(_) => {
+                        run_restic_backup(&my_cfg, &bupcfg);
+                    }
+                    Err(_) => {},
+                }
+            } else {
+                log::error!("{} not installed on machine!", BUPCMD);
+            }
         });
     }
     pool.join();

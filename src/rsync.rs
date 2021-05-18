@@ -1,4 +1,5 @@
 use crate::config::{BackupConfig, Config};
+use crate::mount::Mounter;
 use chrono::{DateTime, Datelike, Local, NaiveDateTime, TimeZone, Timelike};
 use regex::Regex;
 use std::convert::TryFrom;
@@ -16,24 +17,26 @@ pub fn run(cfg: &Config) {
         log::debug!("YAML item: {:?}", my_item);
         let my_cfg = cfg.clone();
         pool.execute(move || {
-            // TODO sanitize all inputs from the yaml files
-            // TODO: mount if "mount" key exist (see borg)
-            // TODO: check if user can mount - or skip
-            // let mounter = Mounter::new(uuid, None);
             let bupcfg = BackupConfig::new(&my_item, BUPTYPE);
             log::debug!("BackupConfig: {:?}", bupcfg);
-            run_rsync_backup(&my_cfg, &bupcfg);
-            retain_rsync_backup(&bupcfg);
-            // TODO: skip in case of Windows and for bad file system
+            if Config::command_existing(BUPCMD) {
+                let mut mounter = Mounter::new(&bupcfg.destmount);
+                match mounter.mount() {
+                    Ok(_) => {
+                        run_rsync_backup(&my_cfg, &bupcfg);
+                        retain_rsync_backup(&bupcfg);
+                    }
+                    Err(_) => {},
+                }
+            } else {
+                log::error!("{} not installed on machine!", BUPCMD);
+            }
         });
     }
     pool.join();
 }
 
 fn run_rsync_backup(cfg: &Config, bup: &BackupConfig) {
-    if !Config::command_existing(BUPCMD) {
-        return;
-    }
     for dest in &bup.dest {
         for _ in 1..cfg.retry_count {
             log::info!(
