@@ -26,7 +26,7 @@ pub fn run(cfg: &Config) {
                         run_rsync_backup(&my_cfg, &bupcfg);
                         retain_rsync_backup(&bupcfg);
                     }
-                    Err(_) => {},
+                    Err(_) => {}
                 }
             } else {
                 log::error!("{} not installed on machine!", BUPCMD);
@@ -63,7 +63,7 @@ fn run_rsync_backup(cfg: &Config, bup: &BackupConfig) {
             log::debug!("{} backup starting: Command={:?}", BUPTYPE, cmd);
             let output = cmd.output().expect("rsync - failed to execute process");
             Config::log_output(&bup.logfile, &output);
-            if !output.status.success() {
+            if !output.status.success() && output.status.code() != Some(23) {
                 log::warn!("End rsync backup ({}): {}", bup.comment, output.status);
                 thread::sleep(std::time::Duration::from_secs(cfg.retry_interval_sec));
             } else {
