@@ -51,7 +51,7 @@ pub fn run(cfg: &Config) {
                             }
                         }
                     }
-                    Err(_) => {},
+                    Err(_) => {}
                 }
             } else {
                 log::error!("{} not installed on machine!", BUPCMD);
@@ -61,9 +61,12 @@ pub fn run(cfg: &Config) {
     pool.join();
 }
 
-fn is_repo_existing(dest: &str) -> bool {
-    let mut cmd = Command::new("rsync");
-    cmd.arg(&dest);
+fn is_repo_existing(dest: &str, pw: &Option<String>) -> bool {
+    let mut cmd = Command::new(BUPCMD);
+    if let Some(pw) = &pw {
+        cmd.env("BORG_PASSPHRASE", OsStr::new(&pw));
+    }
+    cmd.arg("list").arg(&dest);
     log::debug!("Check if repo exist: Command={:?}", cmd);
     let output = cmd.output().expect("cannot check if file exists");
     output.status.success()
@@ -94,7 +97,8 @@ fn run_borg_backup(bup: &BackupConfig) -> Result<(), ()> {
             bup.src,
             dest,
         );
-        if !is_repo_existing(&dest) && !init_repo(&bup.logfile, &dest, &bup.password) {
+        if !is_repo_existing(&dest, &bup.password) && !init_repo(&bup.logfile, &dest, &bup.password)
+        {
             log::error!("{} repo {} not initialized!", BUPTYPE, dest);
             return Err(());
         }
