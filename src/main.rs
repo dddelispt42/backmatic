@@ -1,3 +1,5 @@
+/* Uses C library interface */
+extern crate libc;
 use single_instance::SingleInstance;
 use std::{thread, time};
 
@@ -9,12 +11,14 @@ mod restic;
 mod rsync;
 
 pub struct Backmatic {
+    has_tty: bool,
     conf: config::Config,
     _instance: SingleInstance,
 }
 
 impl Backmatic {
     pub fn new() -> Backmatic {
+        let istty = unsafe { libc::isatty(libc::STDOUT_FILENO as i32) } != 0;
         let cfg = config::Config::new();
         log::debug!("Settings: {:?}", cfg);
         let instance = SingleInstance::new(&cfg.lock_file)
@@ -23,12 +27,16 @@ impl Backmatic {
             panic!("Another backup is running! Terminating...")
         }
         Backmatic {
+            has_tty: istty,
             conf: cfg,
             _instance: instance,
         }
     }
     pub fn run(&self) {
         loop {
+            if self.has_tty {
+                log::info!("Found an interactive TTY!");
+            }
             log::debug!("Running rsync backups...");
             rsync::run(&self.conf);
             log::debug!("Running borg backups...");
