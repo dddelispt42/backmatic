@@ -66,6 +66,7 @@ fn is_repo_existing(dest: &str, pw: &Option<String>) -> bool {
     if let Some(pw) = &pw {
         cmd.env("BORG_PASSPHRASE", OsStr::new(&pw));
     }
+    cmd.env("BORG_RELOCATED_REPO_ACCESS_IS_OK", OsStr::new("yes"));
     cmd.arg("list").arg(&dest);
     log::debug!("Check if repo exist: Command={:?}", cmd);
     let output = cmd.output().expect("cannot check if file exists");
@@ -75,6 +76,7 @@ fn is_repo_existing(dest: &str, pw: &Option<String>) -> bool {
 fn init_repo(logfile: &str, dest: &str, pw: &Option<String>) -> bool {
     let mut cmd = Command::new(BUPCMD);
     cmd.arg("init");
+    cmd.env("BORG_RELOCATED_REPO_ACCESS_IS_OK", OsStr::new("yes"));
     if let Some(pw) = &pw {
         cmd.env("BORG_PASSPHRASE", OsStr::new(&pw));
         cmd.arg("-e").arg("repokey");
@@ -103,6 +105,7 @@ fn run_borg_backup(bup: &BackupConfig) -> Result<(), ()> {
             return Err(());
         }
         let mut cmd = Command::new(BUPCMD);
+        cmd.env("BORG_RELOCATED_REPO_ACCESS_IS_OK", OsStr::new("yes"));
         if let Some(pw) = &bup.password {
             cmd.env("BORG_PASSPHRASE", OsStr::new(&pw));
         }
@@ -135,6 +138,7 @@ fn prune_borg_backup(bup: &BackupConfig) -> Result<(), ()> {
     for dest in &bup.dest {
         log::info!("Prune {} backup: \"{}\"", BUPTYPE, dest);
         let mut cmd = Command::new(BUPCMD);
+        cmd.env("BORG_RELOCATED_REPO_ACCESS_IS_OK", OsStr::new("yes"));
         if let Some(pw) = &bup.password {
             cmd.env("BORG_PASSPHRASE", OsStr::new(&pw));
         }
