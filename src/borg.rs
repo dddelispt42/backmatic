@@ -160,10 +160,10 @@ fn prune_borg_backup(bup: &BackupConfig) -> Result<(), ()> {
         let output = cmd.output().expect("borg - failed to execute process");
         Config::log_output(&bup.logfile, &output);
         if !output.status.success() {
-            log::warn!("End borg pruning: {}", output.status);
+            log::warn!("End {} pruning: {}", BUPTYPE, output.status);
             return Err(());
         }
-        log::info!("End borg pruning: {}", output.status);
+        log::info!("End {} pruning: {}", BUPTYPE, output.status);
     }
     Ok(())
 }
