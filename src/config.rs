@@ -54,6 +54,7 @@ pub struct BackupConfig {
     pub keep_yearly: i64,
 }
 
+// TODO: switch to derive macros
 impl Config {
     pub fn new() -> Config {
         let matches = App::new("Backmatic")
