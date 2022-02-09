@@ -154,6 +154,7 @@ impl Config {
         let config = simplelog::ConfigBuilder::new()
             .set_time_to_local(true)
             .set_thread_mode(simplelog::ThreadLogMode::Both)
+            .set_time_format("%F %T".to_string())
             .build();
         simplelog::TermLogger::init(
             level,
