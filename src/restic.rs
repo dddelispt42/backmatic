@@ -136,7 +136,7 @@ fn prune_restic_backup(bup: &BackupConfig) -> Result<(), ()> {
             .arg(bup.keep_hourly.to_string())
             .arg("--keep-daily")
             .arg(bup.keep_daily.to_string())
-            .arg("--keep_weekly")
+            .arg("--keep-weekly")
             .arg(bup.keep_weekly.to_string())
             .arg("--keep-monthly")
             .arg(bup.keep_monthly.to_string())
