@@ -113,7 +113,7 @@ fn run_restic_backup(bup: &BackupConfig) -> Result<(), ()> {
         log::debug!("{} backup starting: Command={:?}", BUPTYPE, cmd);
         let output = cmd.output().expect("borg - failed to execute process");
         Config::log_output(&bup.logfile, &output);
-        if !output.status.success() {
+        if !output.status.success() && output.status.code() != Some(3) {
             log::warn!("End borg backup ({}): {}", bup.comment, output.status);
             return Err(());
         }
