@@ -1,5 +1,5 @@
 use chrono::Local;
-use clap::{crate_version, App, Arg};
+use clap::{crate_version, Arg};
 use log::LevelFilter;
 use regex::Regex;
 use std::fs;
@@ -57,13 +57,13 @@ pub struct BackupConfig {
 // TODO: switch to derive macros
 impl Config {
     pub fn new() -> Config {
-        let matches = App::new("Backmatic")
+        let matches = clap::Command::new("Backmatic")
             .version(crate_version!())
             .author("Heiko Riemer <heiko@eheiko.net>")
             .about("Automate rsync/borg/restic backups centrally")
             .arg(
-                Arg::with_name("configfile")
-                    .short("c")
+                Arg::new("configfile")
+                    .short('c')
                     .long("configfile")
                     .value_name("FILE")
                     .required(false)
@@ -71,8 +71,8 @@ impl Config {
                     .takes_value(true),
             )
             .arg(
-                Arg::with_name("threads")
-                    .short("t")
+                Arg::new("threads")
+                    .short('t')
                     .long("threads")
                     .help("defin the number of parallel threads")
                     .value_name("NUMBER")
@@ -80,8 +80,8 @@ impl Config {
                     .takes_value(true),
             )
             .arg(
-                Arg::with_name("retryinterval")
-                    .short("i")
+                Arg::new("retryinterval")
+                    .short('i')
                     .long("retryinterval")
                     .help("defines the time between retries")
                     .value_name("NUMBER")
@@ -89,8 +89,8 @@ impl Config {
                     .takes_value(true),
             )
             .arg(
-                Arg::with_name("retries")
-                    .short("r")
+                Arg::new("retries")
+                    .short('r')
                     .long("retries")
                     .help("defines the number of retry attempts")
                     .value_name("NUMBER")
@@ -98,8 +98,8 @@ impl Config {
                     .takes_value(true),
             )
             .arg(
-                Arg::with_name("continuous")
-                    .short("C")
+                Arg::new("continuous")
+                    .short('C')
                     .long("continuous")
                     .help("run endlessly until aborted - define the hours between runs")
                     .value_name("NUMBER")
@@ -107,9 +107,9 @@ impl Config {
                     .takes_value(true),
             )
             .arg(
-                Arg::with_name("v")
-                    .short("v")
-                    .multiple(true)
+                Arg::new("v")
+                    .short('v')
+                    .multiple_occurrences(true)
                     .help("Sets the level of verbosity"),
             )
             .get_matches();
@@ -152,9 +152,12 @@ impl Config {
 
     fn configure_logging(level: LevelFilter) {
         let config = simplelog::ConfigBuilder::new()
-            .set_time_to_local(true)
+            .set_time_offset_to_local()
+            .expect("no locale found")
             .set_thread_mode(simplelog::ThreadLogMode::Both)
-            .set_time_format("%F %T".to_string())
+            .set_time_format_custom(time::macros::format_description!(
+                "[year]:[month]:[day] [hour]:[minute]:[second]"
+            ))
             .build();
         simplelog::TermLogger::init(
             level,
