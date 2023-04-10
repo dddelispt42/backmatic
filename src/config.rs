@@ -1,5 +1,5 @@
 use chrono::Local;
-use clap::{crate_version, Arg};
+use clap::Parser;
 use log::LevelFilter;
 use regex::Regex;
 use std::fs;
@@ -15,6 +15,31 @@ static DEFAULT_LOGDIR: &str = "/tmp";
 static DEFAULT_THREADPOOLSIZE: usize = 4;
 static DEFAULT_RETRYINTERVAL: u64 = 3600;
 static DEFAULT_RETRYCOUNT: u32 = 23;
+static DEFAULT_CONTINUOUS: u64 = 0;
+
+/// Automate rsnc/borg/restic backups centrally
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
+struct Args {
+    /// define the backups to be executed
+    #[arg(short, long, default_value_t = DEFAULT_CONFIG_FILE.to_string())]
+    configfile: String,
+    /// define the number of parallel threads
+    #[arg(short, long, default_value_t = DEFAULT_THREADPOOLSIZE)]
+    threads: usize,
+    /// define the time between retries
+    #[arg(short='i', long, default_value_t = DEFAULT_RETRYINTERVAL)]
+    retryinterval: u64,
+    /// define the number of retry attempts
+    #[arg(short, long, default_value_t = DEFAULT_RETRYCOUNT)]
+    retries: u32,
+    /// run endlessly until aborted - define the hourse between runs
+    #[arg(short = 'C', long, default_value_t = DEFAULT_CONTINUOUS)]
+    continuous: u64,
+    /// Turn verbose information on
+    #[arg(short, long, action = clap::ArgAction::Count)]
+    verbose: u8,
+}
 
 #[derive(Clone, Debug)]
 pub struct Config {
@@ -54,99 +79,23 @@ pub struct BackupConfig {
     pub keep_yearly: i64,
 }
 
-// TODO: switch to derive macros
 impl Config {
     pub fn new() -> Config {
-        let matches = clap::Command::new("Backmatic")
-            .version(crate_version!())
-            .author("Heiko Riemer <heiko@eheiko.net>")
-            .about("Automate rsync/borg/restic backups centrally")
-            .arg(
-                Arg::new("configfile")
-                    .short('c')
-                    .long("configfile")
-                    .value_name("FILE")
-                    .required(false)
-                    .help("define the backups to be executed")
-                    .takes_value(true),
-            )
-            .arg(
-                Arg::new("threads")
-                    .short('t')
-                    .long("threads")
-                    .help("defin the number of parallel threads")
-                    .value_name("NUMBER")
-                    .required(false)
-                    .takes_value(true),
-            )
-            .arg(
-                Arg::new("retryinterval")
-                    .short('i')
-                    .long("retryinterval")
-                    .help("defines the time between retries")
-                    .value_name("NUMBER")
-                    .required(false)
-                    .takes_value(true),
-            )
-            .arg(
-                Arg::new("retries")
-                    .short('r')
-                    .long("retries")
-                    .help("defines the number of retry attempts")
-                    .value_name("NUMBER")
-                    .required(false)
-                    .takes_value(true),
-            )
-            .arg(
-                Arg::new("continuous")
-                    .short('C')
-                    .long("continuous")
-                    .help("run endlessly until aborted - define the hours between runs")
-                    .value_name("NUMBER")
-                    .required(false)
-                    .takes_value(true),
-            )
-            .arg(
-                Arg::new("v")
-                    .short('v')
-                    .multiple_occurrences(true)
-                    .help("Sets the level of verbosity"),
-            )
-            .get_matches();
-        let cfg_file = matches
-            .value_of("configfile")
-            .unwrap_or(DEFAULT_CONFIG_FILE)
-            .to_string();
-        let docs = Config::get_config(&cfg_file).expect("unable to read backup config file");
-        match matches.occurrences_of("v") {
+        let cli = Args::parse();
+        let docs = Config::get_config(&cli.configfile).expect("unable to read backup config file");
+        match cli.verbose {
             0 => Config::configure_logging(LevelFilter::Warn),
             1 => Config::configure_logging(LevelFilter::Info),
             _ => Config::configure_logging(LevelFilter::Debug),
         }
         Config {
             lock_file: DEFAULT_LOCK_FILE.to_string(),
-            config_file: cfg_file,
-            threadpool_size: matches
-                .value_of("threads")
-                .unwrap_or(&DEFAULT_THREADPOOLSIZE.to_string())
-                .parse::<usize>()
-                .unwrap_or(DEFAULT_THREADPOOLSIZE),
-            retry_interval_sec: matches
-                .value_of("threads")
-                .unwrap_or(&DEFAULT_RETRYINTERVAL.to_string())
-                .parse::<u64>()
-                .unwrap_or(DEFAULT_RETRYINTERVAL),
-            retry_count: matches
-                .value_of("retries")
-                .unwrap_or(&DEFAULT_RETRYCOUNT.to_string())
-                .parse::<u32>()
-                .unwrap_or(DEFAULT_RETRYCOUNT),
+            config_file: cli.configfile,
+            threadpool_size: cli.threads,
+            retry_interval_sec: cli.retryinterval,
+            retry_count: cli.retries,
             doc: docs[0].clone(),
-            cycle_time: matches
-                .value_of("continuous")
-                .unwrap_or("0")
-                .parse::<u64>()
-                .unwrap_or(0),
+            cycle_time: cli.continuous,
         }
     }
 
