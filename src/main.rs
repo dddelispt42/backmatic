@@ -48,10 +48,9 @@ impl Backmatic {
             if self.conf.cycle_time == 0 {
                 log::info!("... terminating!");
                 break;
-            } else {
-                log::info!("Repeat after {}h!", self.conf.cycle_time);
-                thread::sleep(time::Duration::from_secs(self.conf.cycle_time * 3600));
             }
+            log::info!("Repeat after {}h!", self.conf.cycle_time);
+            thread::sleep(time::Duration::from_secs(self.conf.cycle_time * 3600));
         }
     }
 }

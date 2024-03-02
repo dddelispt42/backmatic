@@ -225,7 +225,7 @@ impl BackupConfig {
 
     pub fn filenamify(input: &str) -> String {
         let re = Regex::new("[!<> :\'\"/\\|?*+]").expect("Problem in RegEx.");
-        return re.replace_all(input, "_").to_string();
+        re.replace_all(input, "_").to_string()
     }
 
     fn generate_logfilename(log_dir: &str, buptype: &str, comment: &str) -> String {
@@ -235,7 +235,7 @@ impl BackupConfig {
             BackupConfig::filenamify(&comment),
             Local::now().format("%Y%m%d%H%M")
         );
-        return String::from(&format!("{}/{}", log_dir, logstring));
+        String::from(&format!("{}/{}", log_dir, logstring))
     }
 }
 

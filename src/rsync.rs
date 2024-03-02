@@ -47,7 +47,7 @@ fn run_rsync_backup(cfg: &Config, bup: &BackupConfig) {
                 dest,
             );
             let mut cmd = Command::new("rsync");
-            cmd.arg("-avHAXEh")
+            cmd.arg("-avHAEXh")
                 // .arg("--stats")
                 .arg("--delete")
                 .arg("--delete-excluded")
