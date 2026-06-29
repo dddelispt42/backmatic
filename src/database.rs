@@ -1,7 +1,7 @@
 use crate::config::{BackupConfig, Config};
 use std::fs::File;
-use threadpool::ThreadPool;
 use std::process::{Command, Stdio};
+use threadpool::ThreadPool;
 
 static BUPTYPE: &str = "database";
 static BUPCMD: &str = "/usr/bin/mysqldump";
@@ -47,30 +47,58 @@ fn run_database_backup(_cfg: &Config, bup: &BackupConfig) {
                 src,
                 dest,
             );
-            let mut db:&str = "--all-databases";
-            if src != "" {
-                db = &src;
+            let mut db: &str = "--all-databases";
+            if !src.is_empty() {
+                db = src;
             }
-            let filename:&str = &format!("{}/{}_{}.gz", dest, BackupConfig::filenamify(&bup.comment), src);
+            let filename: &str = &format!(
+                "{}/{}_{}.gz",
+                dest,
+                BackupConfig::filenamify(&bup.comment),
+                src
+            );
             log::debug!("Filename {}", filename);
             let bupfile = File::create(filename).expect("Cannot create the DB backup file.");
-            let cmd1 = Command::new(BUPCMD).arg("-u").arg(&user).arg(&format!("-p{}", &password)).arg("-h").arg(&host).arg(db).arg("-E").stdout(Stdio::piped()).spawn().expect("failed to call db backup");
+            let cmd1 = Command::new(BUPCMD)
+                .arg("-u")
+                .arg(&user)
+                .arg(format!("-p{}", &password))
+                .arg("-h")
+                .arg(&host)
+                .arg(db)
+                .arg("-E")
+                .stdout(Stdio::piped())
+                .spawn()
+                .expect("failed to call db backup");
             log::debug!("{} backup starting: Command={:?}", BUPTYPE, cmd1);
-            let output = Command::new("gzip").stdin(cmd1.stdout.unwrap()).stdout(Stdio::from(bupfile)).output().expect("Cannot run the gzip command.");
+            let output = Command::new("gzip")
+                .stdin(cmd1.stdout.unwrap())
+                .stdout(Stdio::from(bupfile))
+                .output()
+                .expect("Cannot run the gzip command.");
 
             Config::log_output(&bup.logfile, &output);
             if !output.status.success() {
-                log::warn!("Failed {} backup ({}): {}", BUPTYPE, bup.comment, output.status);
+                log::warn!(
+                    "Failed {} backup ({}): {}",
+                    BUPTYPE,
+                    bup.comment,
+                    output.status
+                );
                 continue;
             }
-            log::info!("End {} backup ({}): {}", BUPTYPE, bup.comment, output.status);
+            log::info!(
+                "End {} backup ({}): {}",
+                BUPTYPE,
+                bup.comment,
+                output.status
+            );
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
 
     #[test]
     fn test_read_valid_database_config() {

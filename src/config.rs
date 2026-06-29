@@ -44,7 +44,6 @@ struct Args {
 #[derive(Clone, Debug)]
 pub struct Config {
     pub lock_file: String,
-    pub config_file: String,
     pub threadpool_size: usize,
     pub retry_interval_sec: u64,
     pub retry_count: u32,
@@ -53,7 +52,7 @@ pub struct Config {
 }
 
 #[derive(Clone, Debug)]
-pub struct MountConfig {
+pub struct DestMountConfig {
     pub mountpoint: Option<String>,
     pub uuid: Option<String>,
     pub password: Option<String>,
@@ -63,11 +62,10 @@ pub struct MountConfig {
 pub struct BackupConfig {
     pub buptype: String,
     pub comment: String,
-    pub logdir: String,
     pub logfile: String,
     pub src: Vec<String>,
     pub dest: Vec<String>,
-    pub destmount: Option<MountConfig>,
+    pub destmount: Option<DestMountConfig>,
     pub host: Option<String>,
     pub user: Option<String>,
     pub password: Option<String>,
@@ -90,7 +88,6 @@ impl Config {
         }
         Config {
             lock_file: DEFAULT_LOCK_FILE.to_string(),
-            config_file: cli.configfile,
             threadpool_size: cli.threads,
             retry_interval_sec: cli.retryinterval,
             retry_count: cli.retries,
@@ -141,7 +138,6 @@ impl Config {
         {
             let mut file = OpenOptions::new()
                 .create(true)
-                .write(true)
                 .append(true)
                 .open(logfile)
                 .expect("logfile cannot be created");
@@ -152,17 +148,17 @@ impl Config {
         }
         if !output.status.success() {
             std::fs::rename(
-                &logfile,
-                &format!("{}.ERROR_{}", logfile, output.status.code().unwrap_or(0)),
+                logfile,
+                format!("{}.ERROR_{}", logfile, output.status.code().unwrap_or(0)),
             )
             .expect("logfile cannot be renamed");
         }
     }
 }
 
-impl MountConfig {
-    pub fn new(cfg: &Yaml) -> MountConfig {
-        MountConfig {
+impl DestMountConfig {
+    pub fn new(cfg: &Yaml) -> DestMountConfig {
+        DestMountConfig {
             mountpoint: cfg["mountpoint"].as_str().map(|value| value.to_string()),
             uuid: cfg["uuid"].as_str().map(|value| value.to_string()),
             password: cfg["password"].as_str().map(|value| value.to_string()),
@@ -177,9 +173,9 @@ impl BackupConfig {
             Some(value) => value,
         };
         let comment: &str = cfg["comment"].as_str().unwrap_or("");
-        let mut destmount: Option<MountConfig> = None;
+        let mut destmount: Option<DestMountConfig> = None;
         if !cfg["destmount"].is_badvalue() && !cfg["destmount"].is_null() {
-            destmount = Some(MountConfig::new(&cfg["destmount"]));
+            destmount = Some(DestMountConfig::new(&cfg["destmount"]));
         }
         BackupConfig {
             buptype: buptype.to_string(),
@@ -187,8 +183,7 @@ impl BackupConfig {
             src: BackupConfig::yaml2string_list(&cfg["src"]),
             dest: BackupConfig::yaml2string_list(&cfg["dest"]),
             destmount,
-            logdir: logdir.to_string(),
-            logfile: BackupConfig::generate_logfilename(&logdir, buptype, comment),
+            logfile: BackupConfig::generate_logfilename(logdir, buptype, comment),
             host: cfg["host"].as_str().map(|value| value.to_string()),
             user: cfg["user"].as_str().map(|value| value.to_string()),
             password: cfg["password"].as_str().map(|value| value.to_string()),
@@ -205,12 +200,7 @@ impl BackupConfig {
         if !yaml.is_null() && !yaml.is_badvalue() {
             if yaml.is_array() {
                 for value in yaml.as_vec().unwrap_or(&Vec::new()) {
-                    retval.push(
-                        value
-                            .as_str()
-                            .expect("not a string value in yaml file")
-                            .to_string(),
-                    );
+                    retval.append(&mut BackupConfig::yaml2string_list(value));
                 }
             } else {
                 retval.push(
@@ -232,7 +222,7 @@ impl BackupConfig {
         let logstring: &str = &format!(
             "backup-{}_{}_{}.log",
             buptype,
-            BackupConfig::filenamify(&comment),
+            BackupConfig::filenamify(comment),
             Local::now().format("%Y%m%d%H%M")
         );
         String::from(&format!("{}/{}", log_dir, logstring))
@@ -241,7 +231,6 @@ impl BackupConfig {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
 
     #[test]
     #[should_panic]

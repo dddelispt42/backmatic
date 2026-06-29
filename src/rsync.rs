@@ -21,15 +21,12 @@ pub fn run(cfg: &Config) {
             log::debug!("BackupConfig: {:?}", bupcfg);
             if Config::command_existing(BUPCMD) {
                 let mut mounter = Mounter::new(&bupcfg.destmount);
-                match mounter.mount() {
-                    Ok(_) => {
-                        run_rsync_backup(&my_cfg, &bupcfg);
-                        retain_rsync_backup(&bupcfg);
-                    }
-                    Err(_) => {}
+                if mounter.mount().is_ok() {
+                    run_rsync_backup(&my_cfg, &bupcfg);
+                    retain_rsync_backup(&bupcfg);
                 }
             } else {
-                log::error!("{} not installed on machine!", BUPCMD);
+                log::error!("'{}' not installed on machine!", BUPCMD);
             }
         });
     }
@@ -40,37 +37,37 @@ fn run_rsync_backup(cfg: &Config, bup: &BackupConfig) {
     for dest in &bup.dest {
         for _ in 1..cfg.retry_count {
             log::info!(
-                "Start {} ({}): \"{:?}\" --> \"{:?}\"",
+                "Start '{}' ({}): \"{:?}\" --> \"{:?}\"",
                 bup.buptype,
                 bup.comment,
                 bup.src,
                 dest,
             );
             let mut cmd = Command::new("rsync");
-            cmd.arg("-avHAEXh")
+            cmd.arg("-avHAXhE")
                 // .arg("--stats")
                 .arg("--delete")
                 .arg("--delete-excluded")
                 // .arg("--info=BACKUP,COPY,DEL,MOUNT,NAME1,SKIP,STATS3,SYMSAFE")
-                .arg(&format!("--log-file={}", &bup.logfile));
+                .arg(format!("--log-file={}", &bup.logfile));
             for exclude in &bup.exclude {
-                cmd.arg(&format!("--exclude={}", exclude));
+                cmd.arg(format!("--exclude={}", exclude));
             }
             for src in &bup.src {
                 cmd.arg(src);
             }
             cmd.arg(dest);
-            log::debug!("{} backup starting: Command={:?}", BUPTYPE, cmd);
+            log::debug!("'{}' backup starting: Command={:?}", BUPTYPE, cmd);
             let output = cmd.output().expect("rsync - failed to execute process");
             Config::log_output(&bup.logfile, &output);
             if !output.status.success()
                 && output.status.code() != Some(23)
                 && output.status.code() != Some(24)
             {
-                log::warn!("End rsync backup ({}): {}", bup.comment, output.status);
+                log::warn!("End rsync backup ({}): '{}'", bup.comment, output.status);
                 thread::sleep(std::time::Duration::from_secs(cfg.retry_interval_sec));
             } else {
-                log::info!("End rsync backup ({}): {}", bup.comment, output.status);
+                log::info!("End rsync backup ({}): '{}'", bup.comment, output.status);
                 break;
             }
         }
@@ -106,7 +103,7 @@ fn needs_retention(dest: &str, retention: &str, interval: i64) -> bool {
         }
     }
     if is_needed {
-        log::info!("Retain {} backup ({})!", retention, dest);
+        log::info!("Retain '{}' backup ({})!", retention, dest);
     }
     is_needed
 }
@@ -127,23 +124,23 @@ fn retain_for_period(dest: &str, retention: &str, interval: i64, count: i64) {
     if count < 1 {
         return;
     }
-    if needs_retention(&dest, retention, interval) {
+    if needs_retention(dest, retention, interval) {
         let mut cmd = Command::new("cp");
-        cmd.arg("-al").arg(dest).arg(&format!(
+        cmd.arg("-al").arg(dest).arg(format!(
             "{}.{}{}",
             dest.trim_end_matches('/'),
             retention,
             date_to_file_suffix()
         ));
         log::debug!(
-            "{} backup retention starting ({}): Command={:?}",
+            "'{}' backup retention starting ({}): Command={:?}",
             BUPTYPE,
             dest,
             cmd
         );
         let output = cmd.output().expect("cp - failed to execute process");
         log::info!(
-            "Retained {} backup ({}): {}",
+            "Retained '{}' backup ({}): '{}'",
             retention,
             dest,
             output.status
@@ -186,7 +183,7 @@ fn prune_for_period(dest: &str, retention: &str, count: i64) {
             );
             let output = cmd.output().expect("rm - failed to execute process");
             log::info!(
-                "Deleted {} backup ({}): {}",
+                "Deleted '{}' backup ({}): '{}'",
                 retention,
                 bupdir,
                 output.status
@@ -198,24 +195,24 @@ fn prune_for_period(dest: &str, retention: &str, count: i64) {
 fn retain_rsync_backup(bup: &BackupConfig) {
     for dest in &bup.dest {
         let re = regex::Regex::new(r"^(([a-zA-Z][a-zA-Z_-]*)@)?([a-zA-Z][.a-zA-Z0-9_-]*):");
-        if re.expect("could not get compile regex").is_match(&dest) {
+        if re.expect("could not get compile regex").is_match(dest) {
             log::info!(
                 "Rsync: Skipping backup retention for remote destination path! ({})",
                 dest
             );
             return;
         }
-        retain_for_period(&dest, "hourly", 3600, bup.keep_hourly);
-        retain_for_period(&dest, "daily", 3600 * 24, bup.keep_daily);
-        retain_for_period(&dest, "weekly", 3600 * 24 * 7, bup.keep_weekly);
-        retain_for_period(&dest, "monthly", 3600 * 24 * 30, bup.keep_monthly);
-        retain_for_period(&dest, "yearly", 3600 * 24 * 364, bup.keep_yearly);
+        retain_for_period(dest, "hourly", 3600, bup.keep_hourly);
+        retain_for_period(dest, "daily", 3600 * 24, bup.keep_daily);
+        retain_for_period(dest, "weekly", 3600 * 24 * 7, bup.keep_weekly);
+        retain_for_period(dest, "monthly", 3600 * 24 * 30, bup.keep_monthly);
+        retain_for_period(dest, "yearly", 3600 * 24 * 364, bup.keep_yearly);
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    
 
     #[test]
     fn test_read_valid_rsync_config() {

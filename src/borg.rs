@@ -19,42 +19,35 @@ pub fn run(cfg: &Config) {
             log::debug!("BackupConfig: {:?}", bupcfg);
             if Config::command_existing(BUPCMD) {
                 let mut mounter = Mounter::new(&bupcfg.destmount);
-                match mounter.mount() {
-                    Ok(_) => {
-                        for _ in 1..my_cfg.retry_count {
-                            match run_borg_backup(&bupcfg) {
-                                Ok(_) => {}
-                                Err(_) => {
-                                    log::warn!(
-                                        "{} backup ({}) failed - retrying!",
-                                        BUPTYPE,
-                                        bupcfg.comment
-                                    );
-                                    thread::sleep(time::Duration::from_secs(
-                                        my_cfg.retry_interval_sec,
-                                    ));
-                                    continue;
-                                }
+                if mounter.mount().is_ok() {
+                    for _ in 1..my_cfg.retry_count {
+                        match run_borg_backup(&bupcfg) {
+                            Ok(_) => {}
+                            Err(_) => {
+                                log::warn!(
+                                    "'{}' backup ({}) failed - retrying!",
+                                    BUPTYPE,
+                                    bupcfg.comment
+                                );
+                                thread::sleep(time::Duration::from_secs(my_cfg.retry_interval_sec));
+                                continue;
                             }
-                            match prune_borg_backup(&bupcfg) {
-                                Ok(_) => break,
-                                Err(_) => {
-                                    log::warn!(
-                                        "{} backup ({}) pruning failed - retrying!",
-                                        BUPTYPE,
-                                        bupcfg.comment
-                                    );
-                                    thread::sleep(time::Duration::from_secs(
-                                        my_cfg.retry_interval_sec,
-                                    ));
-                                }
+                        }
+                        match prune_borg_backup(&bupcfg) {
+                            Ok(_) => break,
+                            Err(_) => {
+                                log::warn!(
+                                    "'{}' backup ({}) pruning failed - retrying!",
+                                    BUPTYPE,
+                                    bupcfg.comment
+                                );
+                                thread::sleep(time::Duration::from_secs(my_cfg.retry_interval_sec));
                             }
                         }
                     }
-                    Err(_) => {}
                 }
             } else {
-                log::error!("{} not installed on machine!", BUPCMD);
+                log::error!("'{}' not installed on machine!", BUPCMD);
             }
         });
     }
@@ -67,7 +60,7 @@ fn is_repo_existing(dest: &str, pw: &Option<String>) -> bool {
         cmd.env("BORG_PASSPHRASE", OsStr::new(&pw));
     }
     cmd.env("BORG_RELOCATED_REPO_ACCESS_IS_OK", OsStr::new("yes"));
-    cmd.arg("list").arg(&dest);
+    cmd.arg("list").arg(dest);
     log::debug!("Check if repo exist: Command={:?}", cmd);
     let output = cmd.output().expect("cannot check if file exists");
     output.status.success()
@@ -86,7 +79,7 @@ fn init_repo(logfile: &str, dest: &str, pw: &Option<String>) -> bool {
     cmd.arg(dest);
     log::info!("{} repo not existing - calling: {:?}", BUPTYPE, cmd);
     let output = cmd.output().expect("borg - failed to init repo");
-    Config::log_output(&logfile, &output);
+    Config::log_output(logfile, &output);
     output.status.success()
 }
 
@@ -99,8 +92,7 @@ fn run_borg_backup(bup: &BackupConfig) -> Result<(), ()> {
             bup.src,
             dest,
         );
-        if !is_repo_existing(&dest, &bup.password) && !init_repo(&bup.logfile, &dest, &bup.password)
-        {
+        if !is_repo_existing(dest, &bup.password) && !init_repo(&bup.logfile, dest, &bup.password) {
             log::error!("{} repo {} not initialized!", BUPTYPE, dest);
             return Err(());
         }
@@ -111,9 +103,9 @@ fn run_borg_backup(bup: &BackupConfig) -> Result<(), ()> {
         }
         cmd.arg("create").arg("--exclude-caches");
         for exclude in &bup.exclude {
-            cmd.arg(&format!("--exclude={}", exclude));
+            cmd.arg(format!("--exclude={}", exclude));
         }
-        cmd.arg(&format!(
+        cmd.arg(format!(
             "{}::{} {}",
             dest,
             BackupConfig::filenamify(&bup.comment),
@@ -136,7 +128,7 @@ fn run_borg_backup(bup: &BackupConfig) -> Result<(), ()> {
 
 fn prune_borg_backup(bup: &BackupConfig) -> Result<(), ()> {
     for dest in &bup.dest {
-        log::info!("Prune {} backup: \"{}\"", BUPTYPE, dest);
+        log::info!("Prune '{}' backup: \"{}\"", BUPTYPE, dest);
         let mut cmd = Command::new(BUPCMD);
         cmd.env("BORG_RELOCATED_REPO_ACCESS_IS_OK", OsStr::new("yes"));
         if let Some(pw) = &bup.password {
@@ -156,21 +148,20 @@ fn prune_borg_backup(bup: &BackupConfig) -> Result<(), ()> {
             .arg("-y")
             .arg(bup.keep_yearly.to_string())
             .arg(dest);
-        log::debug!("{} backup - pruning starting: Command={:?}", BUPTYPE, cmd);
+        log::debug!("'{}' backup - pruning starting: Command={:?}", BUPTYPE, cmd);
         let output = cmd.output().expect("borg - failed to execute process");
         Config::log_output(&bup.logfile, &output);
         if !output.status.success() {
-            log::warn!("End {} pruning: {}", BUPTYPE, output.status);
+            log::warn!("End '{}' pruning: {}", BUPTYPE, output.status);
             return Err(());
         }
-        log::info!("End {} pruning: {}", BUPTYPE, output.status);
+        log::info!("End '{}' pruning: {}", BUPTYPE, output.status);
     }
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
 
     #[test]
     fn test_read_valid_borg_config() {

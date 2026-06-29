@@ -1,4 +1,4 @@
-use crate::config::MountConfig;
+use crate::config::DestMountConfig;
 use std::process::Command;
 
 #[derive(Clone, Debug)]
@@ -13,7 +13,7 @@ pub struct Mounter {
 }
 
 impl Mounter {
-    pub fn new(config: &Option<MountConfig>) -> Mounter {
+    pub fn new(config: &Option<DestMountConfig>) -> Mounter {
         let mut is_used = false;
         let mut is_luks = false;
         let mut uuid: String = String::from("");
@@ -129,7 +129,7 @@ impl Drop for Mounter {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    
 
     #[test]
     fn test_mount_plain() {

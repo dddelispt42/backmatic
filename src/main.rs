@@ -1,5 +1,4 @@
-/* Uses C library interface */
-extern crate libc;
+/* Uses C library interface */ extern crate libc;
 use single_instance::SingleInstance;
 use std::{thread, time};
 
@@ -18,7 +17,7 @@ pub struct Backmatic {
 
 impl Backmatic {
     pub fn new() -> Backmatic {
-        let istty = unsafe { libc::isatty(libc::STDOUT_FILENO as i32) } != 0;
+        let istty = unsafe { libc::isatty(libc::STDOUT_FILENO) } != 0;
         let cfg = config::Config::new();
         log::debug!("Settings: {:?}", cfg);
         let instance = SingleInstance::new(&cfg.lock_file)
