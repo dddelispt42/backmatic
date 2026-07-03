@@ -1,0 +1,74 @@
+rsync:
+  - comment: "Local documents"
+    logdir: /var/log/backmatic
+    src:
+      - /data/src/documents
+    dest:
+      - /data/dest/documents
+
+  - comment: "Remote server (pulled directly over SSH, no sshfs)"
+    logdir: /var/log/backmatic
+    # rsync speaks SSH natively, so srcmount entries are fetched with
+    # `rsync -e ssh user@host:path` — no FUSE mount is created.
+    srcmount:
+      - host: host1.example.com
+        user: backup
+        path: /srv/www
+        identity_file: /keys/host1
+    dest:
+      - /data/dest/host1-www
+
+borg:
+  - comment: "Borg etc backup"
+    logdir: /var/log/backmatic
+    # borg/restic can only read local paths, so remote sources are mounted
+    # read-only via sshfs (key-based auth only).
+    srcmount:
+      - host: host1.example.com
+        user: backup
+        path: /etc
+        identity_file: /keys/host1
+      - host: host2.example.com
+        user: backup
+        path: /etc
+        identity_file: /keys/host2
+    destmount:
+      - uuid: "12345678-1234-1234-1234-123456789abc"
+        mountpoint: /mnt/usb
+        password: ${LUKS_USB_PASSWORD}
+        path: borg/etc
+    password: ${BORG_PASSWORD}
+    keep_daily: 7
+    keep_weekly: 4
+
+restic:
+  - comment: "Restic offsite"
+    logdir: /var/log/backmatic
+    src:
+      - /data/src/app
+    dest:
+      - /data/dest/restic-repo
+    password: ${RESTIC_PASSWORD}
+    keep_daily: 14
+    healthcheck:
+      url: https://healthchecks.example.com
+      uuid: 11111111-2222-3333-4444-555555555555
+
+database:
+  - comment: "MySQL all"
+    engine: mysql
+    host: localhost
+    user: backup
+    password: ${MYSQL_PASSWORD}
+    dest:
+      - /data/dest/mysql
+  - comment: "PostgreSQL app"
+    engine: postgres
+    host: localhost
+    port: 5432
+    user: backup
+    password: ${PG_PASSWORD}
+    src:
+      - myapp
+    dest:
+      - /data/dest/postgres

@@ -1,0 +1,4 @@
+rsync:
+  - comment: "test"
+    src: [/tmp/src]
+    dest: [/tmp/dest]
