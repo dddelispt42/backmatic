@@ -20,7 +20,11 @@ pub fn run(ctx: &BackmaticContext, job_id: &JobId, job: &FileBackupJob) -> Resul
 
     let tmp_dir = crate::runners::ensure_tmp_dir(ctx)?;
 
-    let (sources, _staging) = prepare_sources(ctx, &scope, job)?;
+    let prepared = prepare_sources(ctx, &scope, job)?;
+    let sources = prepared.sources;
+    let _staging = prepared.guard;
+    // srcmount mount failures are already recorded; back up whatever mounted, fail at the end.
+    let mut failures = prepared.failures;
     let (dests, _mount_session) =
         resolve_destinations(ctx, &scope, &job.comment, &job.dest, &job.destmount)?;
 
@@ -47,44 +51,76 @@ pub fn run(ctx: &BackmaticContext, job_id: &JobId, job: &FileBackupJob) -> Resul
             for ex in &job.exclude {
                 req = req.arg(format!("--exclude={ex}"));
             }
-            let result = ctx.commands.run(&req)?;
-            log_command_output(&logfile, &result)?;
-            let code = result.status.code();
-            if !result.status.success() && code != Some(3) {
-                return Err(BackmaticError::JobFailed {
-                    job_type: "restic".into(),
-                    comment: job.comment.clone(),
-                    message: format!(
-                        "source '{}' --> '{}' failed (exit {code:?}): {}",
-                        source.local_path.display(),
-                        dest,
-                        String::from_utf8_lossy(&result.stderr).trim()
-                    ),
-                });
-            }
-            // Exit 3 = some source files could not be read; the snapshot was still created.
-            if code == Some(3) {
-                log::warn!(
-                    "restic ({}) could not read all files for source '{}' --> '{}' (exit 3); see {logfile}",
+            match run_source(ctx, &logfile, &req) {
+                SourceOutcome::Ok => log::info!(
+                    "Finished restic ({}): {} --> {}",
                     job.comment,
                     source.local_path.display(),
                     dest
-                );
+                ),
+                SourceOutcome::Partial => {
+                    // Exit 3 = some files could not be read; the snapshot was still created.
+                    log::warn!(
+                        "restic ({}) could not read all files for source '{}' --> '{}' (exit 3); see {logfile}",
+                        job.comment,
+                        source.local_path.display(),
+                        dest
+                    );
+                }
+                SourceOutcome::Failed(msg) => {
+                    let full = format!("'{}' --> '{}': {msg}", source.local_path.display(), dest);
+                    log::warn!("restic ({}) source failed, skipping: {full}", job.comment);
+                    failures.push(full);
+                }
             }
-            log::info!(
-                "Finished restic ({}): {} --> {}",
-                job.comment,
-                source.local_path.display(),
-                dest
-            );
         }
         forget_and_prune(ctx, &logfile, dest, job, &tmp_dir)?;
+    }
+
+    if !failures.is_empty() {
+        return Err(BackmaticError::JobFailed {
+            job_type: "restic".into(),
+            comment: job.comment.clone(),
+            message: format!(
+                "{} of source(s) failed (the rest were backed up): {}",
+                failures.len(),
+                failures.join("; ")
+            ),
+        });
     }
 
     if let Some(hc) = &job.healthcheck {
         healthcheck::ping_success(ctx, hc)?;
     }
     Ok(())
+}
+
+enum SourceOutcome {
+    Ok,
+    /// restic exit 3: snapshot created, but some files were unreadable (not a source failure).
+    Partial,
+    /// A per-source failure to record and skip; the rest of the job still proceeds.
+    Failed(String),
+}
+
+fn run_source(ctx: &BackmaticContext, logfile: &str, req: &CommandRequest) -> SourceOutcome {
+    match ctx.commands.run(req) {
+        Ok(result) => {
+            let _ = log_command_output(logfile, &result);
+            let code = result.status.code();
+            if result.status.success() {
+                SourceOutcome::Ok
+            } else if code == Some(3) {
+                SourceOutcome::Partial
+            } else {
+                SourceOutcome::Failed(format!(
+                    "exit {code:?}: {}",
+                    String::from_utf8_lossy(&result.stderr).trim()
+                ))
+            }
+        }
+        Err(e) => SourceOutcome::Failed(e.to_string()),
+    }
 }
 
 fn ensure_repo(

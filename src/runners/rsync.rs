@@ -97,6 +97,10 @@ pub fn run(ctx: &BackmaticContext, job_id: &JobId, job: &FileBackupJob) -> Resul
     let (dests, _mount_session) =
         resolve_destinations(ctx, &scope, &job.comment, &job.dest, &job.destmount)?;
 
+    // A source that can't be synced (e.g. its remote host is down) is skipped and recorded; the
+    // remaining sources still complete, and the job is reported as failed at the end.
+    let mut failures: Vec<String> = Vec::new();
+
     for dest in &dests {
         for source in &sources {
             let target = if use_subdirs {
@@ -106,10 +110,12 @@ pub fn run(ctx: &BackmaticContext, job_id: &JobId, job: &FileBackupJob) -> Resul
             };
             // Pre-create per-origin subdirectories for local destinations so rsync has a base.
             if use_subdirs && !is_remote_dest(dest) {
-                std::fs::create_dir_all(&target).map_err(|source| BackmaticError::Io {
-                    path: target.clone(),
-                    source,
-                })?;
+                if let Err(e) = std::fs::create_dir_all(&target) {
+                    let full = format!("'{}' --> '{target}': {e}", source.spec);
+                    log::warn!("rsync ({}) source failed, skipping: {full}", job.comment);
+                    failures.push(full);
+                    continue;
+                }
             }
 
             log::info!(
@@ -131,37 +137,55 @@ pub fn run(ctx: &BackmaticContext, job_id: &JobId, job: &FileBackupJob) -> Resul
             }
             req = req.arg(source.spec.clone()).arg(target.clone());
 
-            let result = ctx.commands.run(&req)?;
-            log_command_output(&logfile, &result)?;
-            let code = result.status.code();
-            if !result.status.success() && code != Some(23) && code != Some(24) {
-                return Err(BackmaticError::JobFailed {
-                    job_type: "rsync".into(),
-                    comment: job.comment.clone(),
-                    message: format!(
-                        "source '{}' --> '{}' failed (exit {code:?}); see {logfile}",
-                        source.spec, target
-                    ),
-                });
+            match ctx.commands.run(&req) {
+                Ok(result) => {
+                    let _ = log_command_output(&logfile, &result);
+                    let code = result.status.code();
+                    if !result.status.success() && code != Some(23) && code != Some(24) {
+                        let full = format!(
+                            "'{}' --> '{target}': exit {code:?}; see {logfile}",
+                            source.spec
+                        );
+                        log::warn!("rsync ({}) source failed, skipping: {full}", job.comment);
+                        failures.push(full);
+                        continue;
+                    }
+                    // 23/24 are partial-transfer warnings (e.g. a file vanished mid-copy).
+                    if code == Some(23) || code == Some(24) {
+                        log::warn!(
+                            "rsync ({}) partial transfer for source '{}' --> '{}' (exit {code:?}); see {logfile}",
+                            job.comment,
+                            source.spec,
+                            target
+                        );
+                    }
+                    log::info!(
+                        "Finished rsync ({}): {} --> {}",
+                        job.comment,
+                        source.spec,
+                        target
+                    );
+                }
+                Err(e) => {
+                    let full = format!("'{}' --> '{target}': {e}", source.spec);
+                    log::warn!("rsync ({}) source failed, skipping: {full}", job.comment);
+                    failures.push(full);
+                }
             }
-            // 23/24 are partial-transfer warnings (e.g. a file vanished mid-copy): the source
-            // is not fully backed up, but we continue with the remaining sources.
-            if code == Some(23) || code == Some(24) {
-                log::warn!(
-                    "rsync ({}) partial transfer for source '{}' --> '{}' (exit {code:?}); see {logfile}",
-                    job.comment,
-                    source.spec,
-                    target
-                );
-            }
-            log::info!(
-                "Finished rsync ({}): {} --> {}",
-                job.comment,
-                source.spec,
-                target
-            );
         }
         rsync_retention(ctx, dest, &job.retention)?;
+    }
+
+    if !failures.is_empty() {
+        return Err(BackmaticError::JobFailed {
+            job_type: "rsync".into(),
+            comment: job.comment.clone(),
+            message: format!(
+                "{} of source(s) failed (the rest were backed up): {}",
+                failures.len(),
+                failures.join("; ")
+            ),
+        });
     }
 
     if let Some(hc) = &job.healthcheck {

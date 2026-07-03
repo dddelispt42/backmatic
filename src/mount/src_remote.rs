@@ -91,12 +91,25 @@ fn staging_base_for(entry: &SrcMountEntry) -> PathBuf {
         .unwrap_or_else(default_staging_base)
 }
 
+/// Prepared sources for a job, plus any srcmount entries that could not be mounted.
+///
+/// A mount failure (e.g. the remote host is down) is **not** fatal: the offending source is
+/// skipped and its failure recorded in `failures`, so the caller can still back up every source
+/// that *did* mount and then report the job as failed. Successfully mounted sources are returned
+/// in `sources` and kept mounted for the lifetime of `guard`.
+pub struct PreparedSources {
+    pub sources: Vec<SourcedPath>,
+    pub guard: StagingGuard,
+    pub failures: Vec<String>,
+}
+
 pub fn prepare_sources(
     ctx: &BackmaticContext,
     job_scope: &str,
     job: &FileBackupJob,
-) -> Result<(Vec<SourcedPath>, StagingGuard)> {
+) -> Result<PreparedSources> {
     let mut sources = Vec::new();
+    let mut failures = Vec::new();
     let mut guard = StagingGuard::new(
         Arc::clone(&ctx.mount_registry),
         Arc::clone(&ctx.commands),
@@ -114,8 +127,21 @@ pub fn prepare_sources(
         let slug = origin_slug_remote(sm);
         let base = staging_base_for(sm);
         let mountpoint = srcmount_path(&base, job_scope, &slug);
-        prepare_mountpoint_dir(ctx, &mountpoint)?;
-        mount_remote(ctx, sm, &mountpoint)?;
+        let remote = format!("{}@{}:{}", sm.user, sm.host, sm.path);
+
+        if let Err(e) = prepare_mountpoint_dir(ctx, &mountpoint) {
+            log::warn!("srcmount {remote} skipped (mountpoint prep failed): {e}");
+            failures.push(format!("srcmount {remote}: {e}"));
+            continue;
+        }
+        if let Err(e) = mount_remote(ctx, sm, &mountpoint) {
+            // The mount never came up: remove the empty directory we just created so it doesn't
+            // linger and provoke a spurious unmount next time. Skip this source and continue.
+            remove_mountpoint_dirs(&mountpoint);
+            log::warn!("srcmount {remote} skipped (mount failed): {e}");
+            failures.push(format!("srcmount {remote}: {e}"));
+            continue;
+        }
         guard.track(mountpoint.clone());
         sources.push(SourcedPath {
             origin_slug: slug,
@@ -149,7 +175,11 @@ pub fn prepare_sources(
         );
     }
 
-    Ok((sources, guard))
+    Ok(PreparedSources {
+        sources,
+        guard,
+        failures,
+    })
 }
 
 fn prepare_mountpoint_dir(ctx: &BackmaticContext, mountpoint: &Path) -> Result<()> {
@@ -178,31 +208,84 @@ fn prepare_mountpoint_dir(ctx: &BackmaticContext, mountpoint: &Path) -> Result<(
 /// Unmount a sshfs mountpoint (via the configured `fusermount` binary, routed through the
 /// injected command executor), then remove the now-empty mountpoint directory and any empty
 /// parent scope directory it leaves behind.
+///
+/// `fusermount` is only invoked when the path is *actually* mounted. A failed mount (e.g. the
+/// remote host was down) leaves behind only an empty directory — running `fusermount -uz` on it
+/// would fail noisily ("No such file or directory") for no reason, so we simply remove the dir.
 pub(crate) fn unmount_sshfs(
     commands: &dyn CommandExecutor,
     fusermount: &Path,
     mountpoint: &Path,
 ) {
-    log::debug!("Unmounting srcmount at {}", mountpoint.display());
-    let req = CommandRequest::new(fusermount.to_string_lossy().to_string())
-        .arg("-uz")
-        .arg(mountpoint.to_string_lossy().to_string());
-    match commands.run(&req) {
-        Ok(result) if result.status.success() => {
-            log::debug!("Unmounted {}", mountpoint.display());
+    if is_mounted(mountpoint) {
+        log::debug!("Unmounting srcmount at {}", mountpoint.display());
+        let req = CommandRequest::new(fusermount.to_string_lossy().to_string())
+            .arg("-uz")
+            .arg(mountpoint.to_string_lossy().to_string());
+        match commands.run(&req) {
+            Ok(result) if result.status.success() => {
+                log::debug!("Unmounted {}", mountpoint.display());
+            }
+            Ok(result) => {
+                log::warn!(
+                    "fusermount -uz {} failed (exit {:?}): {}",
+                    mountpoint.display(),
+                    result.status.code(),
+                    String::from_utf8_lossy(&result.stderr).trim()
+                );
+            }
+            Err(e) => {
+                log::warn!("fusermount -uz {} failed: {e}", mountpoint.display());
+            }
         }
-        Ok(result) => {
-            log::warn!(
-                "fusermount -uz {} failed (exit {:?})",
-                mountpoint.display(),
-                result.status.code()
-            );
-        }
-        Err(e) => {
-            log::warn!("fusermount -uz {} failed: {e}", mountpoint.display());
-        }
+    } else {
+        log::debug!(
+            "srcmount {} is not mounted; skipping unmount",
+            mountpoint.display()
+        );
     }
     remove_mountpoint_dirs(mountpoint);
+}
+
+/// Best-effort check whether `path` is currently a mount point — including a *stale* FUSE mount
+/// whose transport endpoint is dead (which `stat`/`exists` can no longer see). Reads
+/// `/proc/mounts`, so a plain leftover directory returns `false` and we can skip a pointless
+/// `fusermount` call.
+fn is_mounted(path: &Path) -> bool {
+    let target = path.to_string_lossy();
+    match std::fs::read_to_string("/proc/mounts") {
+        Ok(contents) => contents.lines().any(|line| {
+            line.split_whitespace()
+                .nth(1)
+                .map(unescape_mountinfo)
+                .as_deref()
+                == Some(&target)
+        }),
+        Err(_) => false,
+    }
+}
+
+/// `/proc/mounts` octal-escapes spaces (`\040`), tabs, etc. in the mount-point field. Our staging
+/// paths never contain such characters, but decode defensively so the comparison is exact.
+fn unescape_mountinfo(field: &str) -> String {
+    if !field.contains('\\') {
+        return field.to_string();
+    }
+    let bytes = field.as_bytes();
+    let mut out = String::with_capacity(field.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'\\' && i + 4 <= bytes.len() {
+            if let Ok(code) = u8::from_str_radix(&field[i + 1..i + 4], 8) {
+                out.push(code as char);
+                i += 4;
+                continue;
+            }
+        }
+        out.push(bytes[i] as char);
+        i += 1;
+    }
+    out
 }
 
 /// Remove the leaf mountpoint directory and its now-empty parent scope directory so staging
@@ -290,7 +373,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use crate::config::types::{
-        AppConfig, FileBackupJob, FileConfig, JobId, RetentionConfig, SrcMountEntry,
+        AppConfig, FileBackupJob, FileConfig, RetentionConfig, SrcMountEntry,
     };
     use crate::error::{BackmaticError, Result};
     use crate::inject::commands::{CommandExecutor, CommandRequest, CommandResult, RecordingExecutor};
@@ -348,8 +431,8 @@ mod tests {
         let executor = Arc::new(RecordingExecutor::new());
         let ctx = test_ctx(executor);
         let job = srcmount_job("host1");
-        let (sources, _guard) = prepare_sources(&ctx, "borg-0", &job).unwrap();
-        let path = sources[0].local_path.to_string_lossy();
+        let prepared = prepare_sources(&ctx, "borg-0", &job).unwrap();
+        let path = prepared.sources[0].local_path.to_string_lossy();
         assert!(
             path.contains("borg-0"),
             "mount path should include job scope: {path}"
@@ -361,9 +444,9 @@ mod tests {
         let executor = Arc::new(RecordingExecutor::new());
         let ctx = test_ctx(executor);
         let job = srcmount_job("host1");
-        let (a, _) = prepare_sources(&ctx, "borg-0", &job).unwrap();
-        let (b, _) = prepare_sources(&ctx, "borg-1", &job).unwrap();
-        assert_ne!(a[0].local_path, b[0].local_path);
+        let a = prepare_sources(&ctx, "borg-0", &job).unwrap();
+        let b = prepare_sources(&ctx, "borg-1", &job).unwrap();
+        assert_ne!(a.sources[0].local_path, b.sources[0].local_path);
     }
 
     struct FailSecondSshfs {
@@ -400,7 +483,10 @@ mod tests {
     }
 
     #[test]
-    fn partial_srcmount_failure_unmounts_prior_mounts() {
+    fn partial_srcmount_failure_keeps_good_source_and_records_the_bad_one() {
+        // A failed mount must NOT abort the job: the source that mounted is kept (so its backup
+        // can proceed), and the failed one is recorded so the job is reported failed afterwards.
+        let staging = tempfile::tempdir().unwrap();
         let job = FileBackupJob {
             srcmount: vec![
                 SrcMountEntry {
@@ -409,7 +495,7 @@ mod tests {
                     user: "backup".into(),
                     path: "/a".into(),
                     identity_file: None,
-                    staging_dir: None,
+                    staging_dir: Some(staging.path().to_string_lossy().to_string()),
                     ssh_options: vec![],
                 },
                 SrcMountEntry {
@@ -418,33 +504,33 @@ mod tests {
                     user: "backup".into(),
                     path: "/b".into(),
                     identity_file: None,
-                    staging_dir: None,
+                    staging_dir: Some(staging.path().to_string_lossy().to_string()),
                     ssh_options: vec![],
                 },
             ],
             ..srcmount_job("unused")
         };
+        // First sshfs call (host1) succeeds; second (host2) fails.
         let executor = Arc::new(FailSecondSshfs {
             calls: AtomicUsize::new(0),
         });
         let ctx = test_ctx(executor);
-        let scope = JobId {
-            backup_type: crate::config::types::BackupType::Borg,
-            index: 0,
-        }
-        .scope_key();
-        let first_mount = srcmount_path(&default_staging_base(), &scope, "sshfs_host1_a");
-        match prepare_sources(&ctx, &scope, &job) {
-            Err(e) => assert!(
-                e.to_string().contains("injected second mount failure"),
-                "unexpected error: {e}"
-            ),
-            Ok(_) => panic!("expected partial mount failure"),
-        }
+        let scope = "borg-0";
+        let good = srcmount_path(staging.path(), scope, "sshfs_host1_a");
+        let bad = srcmount_path(staging.path(), scope, "sshfs_host2_b");
+
+        let prepared = prepare_sources(&ctx, scope, &job).expect("partial failure is not fatal");
+
+        assert_eq!(prepared.sources.len(), 1, "the mounted source is kept");
+        assert_eq!(prepared.sources[0].local_path, good);
+        assert_eq!(prepared.failures.len(), 1, "the failed mount is recorded");
         assert!(
-            !first_mount.exists(),
-            "first mountpoint should be cleaned up after partial failure"
+            prepared.failures[0].contains("host2"),
+            "failure should name the bad source: {:?}",
+            prepared.failures
         );
+        assert!(good.exists(), "the successful mountpoint is kept");
+        assert!(!bad.exists(), "the failed mount leaves no leftover dir");
     }
 
     #[test]
@@ -475,7 +561,9 @@ mod tests {
     }
 
     #[test]
-    fn unmount_sshfs_routes_through_executor_and_removes_dir() {
+    fn unmount_sshfs_skips_fusermount_when_not_mounted() {
+        // A leftover (never-mounted) directory must not trigger a fusermount call — that is what
+        // produced the noisy "fusermount ... No such file or directory" after a failed mount.
         let dir = tempfile::tempdir().unwrap();
         let leaf = dir.path().join("scope").join("mnt");
         std::fs::create_dir_all(&leaf).unwrap();
@@ -484,10 +572,45 @@ mod tests {
         unmount_sshfs(&rec, Path::new("/usr/bin/fusermount"), &leaf);
 
         let calls = rec.calls.lock().unwrap();
-        let (program, args) = calls.last().expect("a command was run");
-        assert!(program.contains("fusermount"), "should call fusermount: {program}");
-        assert_eq!(args[0], "-uz");
-        assert!(!leaf.exists(), "mountpoint dir should be removed after unmount");
+        assert!(
+            !calls.iter().any(|(prog, _)| prog.contains("fusermount")),
+            "fusermount must not be invoked on a directory that is not mounted"
+        );
+        assert!(!leaf.exists(), "leftover mountpoint dir should still be removed");
+    }
+
+    #[test]
+    fn failed_mount_leaves_no_leftover_dir() {
+        // When sshfs fails (remote down), the created mountpoint dir must be cleaned up so the
+        // next attempt doesn't see a stale dir (and try to unmount something that isn't mounted).
+        let job = srcmount_job("downhost");
+        let staging = tempfile::tempdir().unwrap();
+        let mut job = job;
+        job.srcmount[0].staging_dir = Some(staging.path().to_string_lossy().to_string());
+
+        let executor = Arc::new(FailSecondSshfs {
+            calls: AtomicUsize::new(1), // start at 1 so the first (and only) sshfs call fails
+        });
+        let ctx = test_ctx(executor);
+
+        let scope = "restic-0";
+        let slug = origin_slug_remote(&job.srcmount[0]);
+        let mountpoint = srcmount_path(staging.path(), scope, &slug);
+
+        let prepared = prepare_sources(&ctx, scope, &job).expect("mount failure is not fatal");
+        assert!(prepared.sources.is_empty(), "the only source failed to mount");
+        assert_eq!(prepared.failures.len(), 1, "the failure is recorded");
+        assert!(
+            !mountpoint.exists(),
+            "failed mount must not leave a leftover directory: {}",
+            mountpoint.display()
+        );
+    }
+
+    #[test]
+    fn is_mounted_false_for_plain_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!is_mounted(dir.path()));
     }
 
     #[test]
@@ -519,8 +642,8 @@ mod tests {
         let mut job = srcmount_job("host1");
         job.srcmount[0].staging_dir = Some(staging.path().to_string_lossy().to_string());
 
-        let (_sources, guard) = prepare_sources(&ctx, "borg-0", &job).unwrap();
-        drop(guard);
+        let prepared = prepare_sources(&ctx, "borg-0", &job).unwrap();
+        drop(prepared.guard);
 
         let calls = rec.calls.lock().unwrap();
         let sshfs_call = calls
@@ -544,8 +667,8 @@ mod tests {
         let mut job = srcmount_job("host1");
         job.srcmount[0].staging_dir = Some(staging.path().to_string_lossy().to_string());
 
-        let (_sources, guard) = prepare_sources(&ctx, "borg-0", &job).unwrap();
-        drop(guard); // trigger unmount before assertions
+        let prepared = prepare_sources(&ctx, "borg-0", &job).unwrap();
+        drop(prepared.guard); // trigger unmount before assertions
 
         let calls = rec.calls.lock().unwrap();
         let sshfs_call = calls

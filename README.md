@@ -1,6 +1,6 @@
 # Backmatic
 
-Backmatic is a Rust CLI and library that runs backup jobs from a single YAML configuration file. It orchestrates **rsync**, **Borg**, **Restic**, and **database** dumps (MySQL and PostgreSQL) with type-priority parallel scheduling, optional LUKS `destmount`, remote `srcmount` staging, retention policies, healthchecks.io pings, retries, and continuous mode.
+Backmatic is a Rust CLI and library that runs backup jobs from a single YAML configuration file. It orchestrates **rsync**, **Borg**, **Restic**, and **database** dumps (MySQL and PostgreSQL) with type-priority parallel scheduling, optional LUKS `destmount`, remote `srcmount` sources, per-source failure resilience, retention policies, healthchecks.io pings, retries, continuous mode, and graceful signal-driven cleanup.
 
 Only one instance may run at a time; an XDG runtime lock file prevents overlapping runs.
 
@@ -190,11 +190,23 @@ Within each cycle, jobs are dispatched by **type priority**: rsync → borg → 
 
 In **continuous mode** (`-C N`), cycle boundaries are anchored to wall clock. If a cycle overruns its slot, only jobs that **completed** in the prior cycle are re-queued; running and retrying jobs are not duplicated.
 
+## Failure handling & resilience
+
+Sources within a job are backed up **independently**. If one `src`/`srcmount` cannot be processed — e.g. a remote `srcmount` host is down, or an sshfs mount fails — that source is skipped and the job continues with the rest. The successfully processed sources are committed to a valid, complete backup (Borg/Restic repository or rsync destination); only the failed sources are missing. The job is still reported as **failed** at the end (a warning is logged per skipped source, and the healthchecks.io fail ping is sent after retries are exhausted).
+
+The scheduler then retries the whole job (`--retries`), giving a transiently-down source another chance. If it recovers on a later attempt, the job passes. (Retrying re-processes the sources that already succeeded; for Borg/Restic this is cheap thanks to deduplication, and any extra snapshots are cleaned up by your retention/prune settings.)
+
+Notable per-tool cases that are treated as **partial success** (source still backed up, only a warning): restic exit `3` (some files unreadable), rsync exit `23`/`24` (partial transfer, e.g. a file vanished mid-copy).
+
 ## Healthchecks
 
-On success, Backmatic pings `POST {url}/ping/{uuid}`.
+On full success, Backmatic pings `POST {url}/ping/{uuid}`. A success ping is sent only when **every** source of the job was backed up without error.
 
-After all retries are exhausted, it pings `POST {url}/ping/{uuid}/fail` with a plain-text body containing `job_type`, `comment`, `attempts`, `last_error`, `logfile`, and `dest`.
+After all retries are exhausted — including when only *some* sources failed — it pings `POST {url}/ping/{uuid}/fail` with a plain-text body containing `job_type`, `comment`, `attempts`, `last_error`, `logfile`, and `dest`.
+
+## Signals & shutdown
+
+backmatic shuts down cleanly on `SIGINT` (Ctrl-C) or `SIGTERM`. On the first signal it stops starting new work, terminates the child processes it spawned (`SIGTERM`, then `SIGKILL` for stragglers) **before** tearing down mounts, unmounts all active `srcmount` (sshfs) and `destmount` (LUKS) mounts, releases and removes the lock file, and exits with status `130`. Killing children before unmounting ensures nothing is still writing into a mount point as it is unmounted.
 
 ## Project layout
 
