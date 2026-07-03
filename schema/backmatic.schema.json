@@ -1,0 +1,152 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://backmatic.dev/schema/backmatic.schema.json",
+  "title": "Backmatic configuration",
+  "type": "object",
+  "required": ["version"],
+  "properties": {
+    "version": { "type": "integer", "minimum": 1 },
+    "defaults": { "$ref": "#/definitions/defaults" },
+    "rsync": { "type": "array", "items": { "$ref": "#/definitions/fileJob" } },
+    "borg": { "type": "array", "items": { "$ref": "#/definitions/fileJob" } },
+    "restic": { "type": "array", "items": { "$ref": "#/definitions/fileJob" } },
+    "database": { "type": "array", "items": { "$ref": "#/definitions/databaseJob" } }
+  },
+  "definitions": {
+    "stringOrList": {
+      "oneOf": [
+        { "type": "string" },
+        { "type": "array", "items": { "type": "string" } }
+      ]
+    },
+    "defaults": {
+      "type": "object",
+      "properties": {
+        "logdir": { "type": "string" },
+        "tmp_dir": { "type": "string" },
+        "tools": {
+          "type": "object",
+          "properties": {
+            "rsync": { "type": "string" },
+            "borg": { "type": "string" },
+            "restic": { "type": "string" },
+            "mysqldump": { "type": "string" },
+            "pg_dump": { "type": "string" },
+            "gzip": { "type": "string" },
+            "mount": { "type": "string" },
+            "umount": { "type": "string" },
+            "cryptsetup": { "type": "string" },
+            "cp": { "type": "string" },
+            "rm": { "type": "string" },
+            "sshfs": { "type": "string" },
+            "fusermount": { "type": "string" }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "retention": {
+      "type": "object",
+      "properties": {
+        "keep_hourly": { "type": "integer", "minimum": 0 },
+        "keep_daily": { "type": "integer", "minimum": 0 },
+        "keep_weekly": { "type": "integer", "minimum": 0 },
+        "keep_monthly": { "type": "integer", "minimum": 0 },
+        "keep_yearly": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "healthcheck": {
+      "type": "object",
+      "required": ["url", "uuid"],
+      "properties": {
+        "url": { "type": "string", "format": "uri" },
+        "uuid": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "destmountEntry": {
+      "type": "object",
+      "required": ["uuid"],
+      "properties": {
+        "uuid": { "type": "string" },
+        "mountpoint": { "type": "string" },
+        "password": { "type": "string" },
+        "path": { "type": "string", "default": "." }
+      },
+      "additionalProperties": false
+    },
+    "destmount": {
+      "oneOf": [
+        { "$ref": "#/definitions/destmountEntry" },
+        { "type": "array", "items": { "$ref": "#/definitions/destmountEntry" } }
+      ]
+    },
+    "srcmountEntry": {
+      "type": "object",
+      "required": ["host", "user", "path"],
+      "properties": {
+        "host": { "type": "string" },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535, "default": 22 },
+        "user": { "type": "string" },
+        "path": { "type": "string" },
+        "identity_file": { "type": "string" },
+        "staging_dir": { "type": "string" },
+        "ssh_options": { "type": "array", "items": { "type": "string" } }
+      },
+      "additionalProperties": false
+    },
+    "srcmount": {
+      "oneOf": [
+        { "$ref": "#/definitions/srcmountEntry" },
+        { "type": "array", "items": { "$ref": "#/definitions/srcmountEntry" } }
+      ]
+    },
+    "fileJob": {
+      "type": "object",
+      "properties": {
+        "comment": { "type": "string" },
+        "logdir": { "type": "string" },
+        "src": { "$ref": "#/definitions/stringOrList" },
+        "dest": { "$ref": "#/definitions/stringOrList" },
+        "exclude": { "$ref": "#/definitions/stringOrList" },
+        "password": { "type": "string" },
+        "destmount": { "$ref": "#/definitions/destmount" },
+        "srcmount": { "$ref": "#/definitions/srcmount" },
+        "keep_hourly": { "type": "integer", "minimum": 0 },
+        "keep_daily": { "type": "integer", "minimum": 0 },
+        "keep_weekly": { "type": "integer", "minimum": 0 },
+        "keep_monthly": { "type": "integer", "minimum": 0 },
+        "keep_yearly": { "type": "integer", "minimum": 0 },
+        "healthcheck": { "$ref": "#/definitions/healthcheck" }
+      },
+      "allOf": [
+        { "anyOf": [{ "required": ["dest"] }, { "required": ["destmount"] }] },
+        { "anyOf": [{ "required": ["src"] }, { "required": ["srcmount"] }] }
+      ],
+      "additionalProperties": false
+    },
+    "databaseJob": {
+      "type": "object",
+      "properties": {
+        "comment": { "type": "string" },
+        "logdir": { "type": "string" },
+        "engine": { "type": "string", "enum": ["mysql", "postgres"], "default": "mysql" },
+        "host": { "type": "string" },
+        "port": { "type": "integer" },
+        "user": { "type": "string" },
+        "password": { "type": "string" },
+        "src": { "$ref": "#/definitions/stringOrList" },
+        "dest": { "$ref": "#/definitions/stringOrList" },
+        "destmount": { "$ref": "#/definitions/destmount" },
+        "healthcheck": { "$ref": "#/definitions/healthcheck" }
+      },
+      "anyOf": [
+        { "required": ["dest"] },
+        { "required": ["destmount"] }
+      ],
+      "additionalProperties": false
+    }
+  }
+}
