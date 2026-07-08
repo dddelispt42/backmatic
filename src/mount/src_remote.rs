@@ -38,6 +38,12 @@ impl StagingGuard {
         self.mounts.push(mountpoint);
     }
 
+    /// Take ownership of another guard's tracked mounts so they are unmounted by `self` on drop
+    /// (and the drained guard becomes a no-op). Both guards must share the same registry/executor.
+    fn merge_from(&mut self, other: &mut StagingGuard) {
+        self.mounts.append(&mut other.mounts);
+    }
+
     pub fn paths(&self) -> Vec<PathBuf> {
         self.mounts.clone()
     }
@@ -91,12 +97,123 @@ fn staging_base_for(entry: &SrcMountEntry) -> PathBuf {
         .unwrap_or_else(default_staging_base)
 }
 
+/// A source a job will back up, enumerated *without* mounting anything yet. Remote sources are
+/// mounted just-in-time via [`mount_source`] so the sshfs mount only exists during that source's
+/// backup window (see the lazy per-source flow in the borg/restic runners).
+#[derive(Debug, Clone)]
+pub enum SourceSpec {
+    Local {
+        origin_slug: String,
+        path: PathBuf,
+    },
+    Remote {
+        entry: SrcMountEntry,
+        origin_slug: String,
+        mountpoint: PathBuf,
+    },
+}
+
+impl SourceSpec {
+    /// Human-readable identity for logs and failure messages.
+    pub fn describe(&self) -> String {
+        match self {
+            SourceSpec::Local { path, .. } => path.display().to_string(),
+            SourceSpec::Remote { entry, .. } => {
+                format!("{}@{}:{}", entry.user, entry.host, entry.path)
+            }
+        }
+    }
+
+    pub fn is_remote(&self) -> bool {
+        matches!(self, SourceSpec::Remote { .. })
+    }
+}
+
+/// Enumerate every source of a job (remote srcmounts first, then local `src` paths) without
+/// touching the network or filesystem. Mount points for remote sources are computed but not
+/// created; call [`mount_source`] to bring one up just before its backup.
+pub fn enumerate_sources(job_scope: &str, job: &FileBackupJob) -> Vec<SourceSpec> {
+    let mut specs = Vec::new();
+    for sm in &job.srcmount {
+        let origin_slug = origin_slug_remote(sm);
+        let base = staging_base_for(sm);
+        let mountpoint = srcmount_path(&base, job_scope, &origin_slug);
+        specs.push(SourceSpec::Remote {
+            entry: sm.clone(),
+            origin_slug,
+            mountpoint,
+        });
+    }
+    for src in &job.src {
+        specs.push(SourceSpec::Local {
+            origin_slug: crate::mount::origin::origin_slug_local(src),
+            path: PathBuf::from(src),
+        });
+    }
+    specs
+}
+
+/// Mount a single enumerated source just-in-time and return its resolved [`SourcedPath`] together
+/// with a [`StagingGuard`] that unmounts it as soon as the guard is dropped. Local sources need no
+/// mount, so their guard holds nothing. A remote mount failure removes the leftover mountpoint dir
+/// and returns the error (the caller records it and skips the source).
+pub fn mount_source(
+    ctx: &BackmaticContext,
+    spec: &SourceSpec,
+) -> Result<(SourcedPath, StagingGuard)> {
+    let mut guard = StagingGuard::new(
+        Arc::clone(&ctx.mount_registry),
+        Arc::clone(&ctx.commands),
+        ctx.paths.fusermount.clone(),
+    );
+    match spec {
+        SourceSpec::Local { origin_slug, path } => Ok((
+            SourcedPath {
+                origin_slug: origin_slug.clone(),
+                local_path: path.clone(),
+                protocol: None,
+                host: None,
+                remote_path: None,
+            },
+            guard,
+        )),
+        SourceSpec::Remote {
+            entry,
+            origin_slug,
+            mountpoint,
+        } => {
+            prepare_mountpoint_dir(ctx, mountpoint)?;
+            if let Err(e) = mount_remote(ctx, entry, mountpoint) {
+                // The mount never came up: remove the empty directory we just created so it does
+                // not linger and provoke a spurious unmount next time.
+                remove_mountpoint_dirs(mountpoint);
+                return Err(e);
+            }
+            guard.track(mountpoint.clone());
+            Ok((
+                SourcedPath {
+                    origin_slug: origin_slug.clone(),
+                    local_path: mountpoint.clone(),
+                    protocol: Some("sshfs".to_string()),
+                    host: Some(entry.host.clone()),
+                    remote_path: Some(entry.path.clone()),
+                },
+                guard,
+            ))
+        }
+    }
+}
+
 /// Prepared sources for a job, plus any srcmount entries that could not be mounted.
 ///
 /// A mount failure (e.g. the remote host is down) is **not** fatal: the offending source is
 /// skipped and its failure recorded in `failures`, so the caller can still back up every source
 /// that *did* mount and then report the job as failed. Successfully mounted sources are returned
 /// in `sources` and kept mounted for the lifetime of `guard`.
+///
+/// This eagerly mounts *all* remote sources up front. The borg/restic runners instead mount lazily
+/// via [`enumerate_sources`] + [`mount_source`]; this helper is retained for callers/tests that
+/// want the full set mounted at once.
 pub struct PreparedSources {
     pub sources: Vec<SourcedPath>,
     pub guard: StagingGuard,
@@ -123,43 +240,17 @@ pub fn prepare_sources(
         );
     }
 
-    for sm in &job.srcmount {
-        let slug = origin_slug_remote(sm);
-        let base = staging_base_for(sm);
-        let mountpoint = srcmount_path(&base, job_scope, &slug);
-        let remote = format!("{}@{}:{}", sm.user, sm.host, sm.path);
-
-        if let Err(e) = prepare_mountpoint_dir(ctx, &mountpoint) {
-            log::warn!("srcmount {remote} skipped (mountpoint prep failed): {e}");
-            failures.push(format!("srcmount {remote}: {e}"));
-            continue;
+    for spec in enumerate_sources(job_scope, job) {
+        match mount_source(ctx, &spec) {
+            Ok((sourced, mut one)) => {
+                guard.merge_from(&mut one);
+                sources.push(sourced);
+            }
+            Err(e) => {
+                log::warn!("srcmount {} skipped: {e}", spec.describe());
+                failures.push(format!("srcmount {}: {e}", spec.describe()));
+            }
         }
-        if let Err(e) = mount_remote(ctx, sm, &mountpoint) {
-            // The mount never came up: remove the empty directory we just created so it doesn't
-            // linger and provoke a spurious unmount next time. Skip this source and continue.
-            remove_mountpoint_dirs(&mountpoint);
-            log::warn!("srcmount {remote} skipped (mount failed): {e}");
-            failures.push(format!("srcmount {remote}: {e}"));
-            continue;
-        }
-        guard.track(mountpoint.clone());
-        sources.push(SourcedPath {
-            origin_slug: slug,
-            local_path: mountpoint,
-            protocol: Some("sshfs".to_string()),
-            host: Some(sm.host.clone()),
-            remote_path: Some(sm.path.clone()),
-        });
-    }
-
-    for src in &job.src {
-        sources.push(SourcedPath {
-            origin_slug: crate::mount::origin::origin_slug_local(src),
-            local_path: PathBuf::from(src),
-            protocol: None,
-            host: None,
-            remote_path: None,
-        });
     }
 
     if !guard.mounts.is_empty() {
@@ -415,6 +506,7 @@ mod tests {
             }],
             retention: RetentionConfig::default(),
             healthcheck: None,
+            verify: Default::default(),
         }
     }
 

@@ -11,6 +11,7 @@ pub mod retention;
 pub mod runners;
 pub mod scheduler;
 pub mod shutdown;
+pub mod verify;
 
 pub use app::Backmatic;
 pub use cli::CliArgs;

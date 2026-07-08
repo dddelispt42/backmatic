@@ -338,6 +338,7 @@ mod tests {
                 srcmount: vec![],
                 retention: RetentionConfig::default(),
                 healthcheck: None,
+                verify: Default::default(),
             },
         }
     }

@@ -100,6 +100,7 @@ pub fn run(ctx: &BackmaticContext, job_id: &JobId, job: &FileBackupJob) -> Resul
     // A source that can't be synced (e.g. its remote host is down) is skipped and recorded; the
     // remaining sources still complete, and the job is reported as failed at the end.
     let mut failures: Vec<String> = Vec::new();
+    let stall = crate::runners::stall_timeout(ctx);
 
     for dest in &dests {
         for source in &sources {
@@ -125,6 +126,7 @@ pub fn run(ctx: &BackmaticContext, job_id: &JobId, job: &FileBackupJob) -> Resul
                 target
             );
             let mut req = CommandRequest::new(ctx.paths.rsync.to_string_lossy().to_string())
+                .stall_timeout(stall)
                 .arg("-avHAXhE")
                 .arg("--delete")
                 .arg("--delete-excluded")
@@ -245,6 +247,7 @@ mod tests {
             }],
             retention: RetentionConfig::default(),
             healthcheck: None,
+            verify: Default::default(),
         }
     }
 

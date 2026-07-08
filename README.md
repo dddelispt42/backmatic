@@ -1,6 +1,6 @@
 # Backmatic
 
-Backmatic is a Rust CLI and library that runs backup jobs from a single YAML configuration file. It orchestrates **rsync**, **Borg**, **Restic**, and **database** dumps (MySQL and PostgreSQL) with type-priority parallel scheduling, optional LUKS `destmount`, remote `srcmount` sources, per-source failure resilience, retention policies, healthchecks.io pings, retries, continuous mode, and graceful signal-driven cleanup.
+Backmatic is a Rust CLI and library that runs backup jobs from a single YAML configuration file. It orchestrates **rsync**, **Borg**, **Restic**, and **database** dumps (MySQL and PostgreSQL) with type-priority parallel scheduling, optional LUKS `destmount`, remote `srcmount` sources, per-source failure resilience, lazy per-source mounting, an I/O-stall watchdog, optional post-backup restore verification, retention policies, healthchecks.io pings, retries, continuous mode, and graceful signal-driven cleanup.
 
 Only one instance may run at a time; an XDG runtime lock file prevents overlapping runs.
 
@@ -73,6 +73,7 @@ version: 1
 defaults:
   logdir: /var/log/backmatic
   tmp_dir: /var/tmp/backmatic-tmp   # optional; exported as TMPDIR to restic/borg
+  stall_timeout: 1800               # optional; abort a backup with no I/O progress for N seconds (0 disables)
 
 rsync:    # optional
   - comment: "Documents"
@@ -103,6 +104,7 @@ database: # optional — mysql or postgres per job
 | `password` | no | Borg/Restic repo password or LUKS passphrase |
 | `keep_hourly` … `keep_yearly` | no | Retention (`0` = disabled) |
 | `healthcheck` | no | healthchecks.io `{ url, uuid }` |
+| `verify` | no | Post-backup restore verification (borg/restic only); see below |
 
 \* At least one of `src` or `srcmount` is required.  
 \** At least one of `dest` or `destmount` is required. `dest` and `destmount` are independent lists — both are used when present.
@@ -113,7 +115,7 @@ database: # optional — mysql or postgres per job
 
 Structured entries only (no URI shorthand). The transport depends on the backup tool:
 
-- **`borg` / `restic`** can only read local paths, so a remote `srcmount` is **mounted read-only via sshfs** (FUSE) into a local mount point. Files are read over the network on demand — local disk is only used for the backup destination, never a full remote mirror.
+- **`borg` / `restic`** can only read local paths, so a remote `srcmount` is **mounted read-only via sshfs** (FUSE) into a local mount point. Files are read over the network on demand — local disk is only used for the backup destination, never a full remote mirror. Mounts are **lazy and per-source**: a srcmount is mounted just before its backup and unmounted immediately afterwards (and re-mounted before each retry). This keeps mounts correlated with active work, avoids pointless mounts of hosts that are currently down, and minimizes the window in which a wedged mount can hang.
 - **`rsync`** speaks SSH natively, so a remote `srcmount` is pulled directly with `rsync -e ssh user@host:path`. **No sshfs mount, no FUSE, no staging directory** is created for rsync jobs.
 
 Authentication is **always key-based** (`identity_file`, the SSH agent, or `~/.ssh/config`); passwords are intentionally not supported for srcmount.
@@ -171,6 +173,26 @@ Devices are unmounted when the job finishes.
 
 restic (and borg) buffer large temporary files while packing data — restic writes `restic-temp-pack-*` files to `$TMPDIR`. If `/tmp` is a small tmpfs, big backups fail with `no space left on device`. backmatic therefore runs these tools with `TMPDIR` pointed at `defaults.tmp_dir` (or `$BACKMATIC_TMPDIR`), defaulting to the disk-backed `/var/tmp/backmatic-tmp`. Point `tmp_dir` at a filesystem with enough free space (ideally on the same volume as, or as roomy as, your backup data).
 
+### Stall watchdog (`stall_timeout`)
+
+A backup can hang indefinitely — e.g. a wedged sshfs read that returns I/O errors, or a stuck network transfer — without the tool ever exiting. backmatic runs each transfer command (`rsync`, `borg create`, `restic backup`) under an I/O-progress watchdog: it samples the child's `/proc/<pid>/io` byte counters, and if they make **no** progress for `defaults.stall_timeout` seconds (default `1800`), it aborts the child (`SIGTERM`, then `SIGKILL`). The stalled source is recorded as failed and the job continues with the others. Set `stall_timeout: 0` to disable, or override per-run with `$BACKMATIC_STALL_TIMEOUT` (seconds). Only *idle* transfers are aborted — a slow-but-progressing backup is never interrupted.
+
+### Restore verification (`verify`)
+
+Opt-in, **borg/restic only**. After a source's backup completes, backmatic hashes a random sample of the (still-mounted) source files, restores those same paths from the freshly written repository (`restic dump` / `borg extract --stdout`), and compares SHA-256 hashes. A mismatch or restore failure marks the job **failed** (and pings the healthcheck as failed after retries), giving confidence the repository actually holds recoverable data.
+
+```yaml
+restic:
+  - comment: "Offsite"
+    src: [/data/app]
+    dest: [/backup/restic-repo]
+    password: ${RESTIC_PASSWORD}
+    verify:
+      enabled: true          # default false
+      samples: 2             # files to check per source (default 1)
+      max_file_size: 104857600  # optional: skip files larger than N bytes
+```
+
 ### Database
 
 ```yaml
@@ -218,6 +240,7 @@ src/
   mount/        srcmount staging, destmount LUKS, origin slugs
   scheduler/    type-priority pool, continuous cycle
   runners/      rsync, borg, restic, database
+  verify/       post-backup restore verification (sample + hash + compare)
   healthcheck/  healthchecks.io client
   retention/    rsync snapshot math
 schema/backmatic.schema.json

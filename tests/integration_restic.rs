@@ -189,7 +189,36 @@ fn t23_multi_origin_restic() {
         srcmount: vec![],
         retention: RetentionConfig::default(),
         healthcheck: None,
+        verify: Default::default(),
     };
     h.run_job(BackupType::Restic, job);
     assert_eq!(restic_snapshot_count(&repo, PASS), 2);
+}
+
+#[test]
+fn t26_restore_verify_restic() {
+    if !skip_without_tool("restic") {
+        return;
+    }
+    use backmatic::config::types::VerifyConfig;
+    let h = Harness::new();
+    let tree = TestTree::basic();
+    let repo = h.dest_dir("repo");
+    let job = FileBackupJob {
+        password: Some(PASS.into()),
+        verify: VerifyConfig {
+            enabled: true,
+            samples: 3,
+            max_file_size: None,
+        },
+        ..file_job(
+            "verify-restic",
+            vec![format!("{}/", tree.path().display())],
+            vec![repo.to_string_lossy().to_string()],
+            vec![],
+            RetentionConfig::default(),
+        )
+    };
+    // A clean backup+verify round-trip must succeed (restored samples match originals).
+    h.run_job(BackupType::Restic, job);
 }

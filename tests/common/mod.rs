@@ -178,6 +178,16 @@ impl Harness {
     }
 
     pub fn run_job(&self, job_type: BackupType, job: FileBackupJob) {
+        self.try_run_job(job_type, job).expect("job should succeed");
+    }
+
+    /// Like [`Harness::run_job`] but returns the result so tests can assert on failures
+    /// (e.g. restore-verification mismatches).
+    pub fn try_run_job(
+        &self,
+        job_type: BackupType,
+        job: FileBackupJob,
+    ) -> backmatic::Result<()> {
         let spec = JobSpec::File {
             id: JobId {
                 backup_type: job_type,
@@ -186,7 +196,7 @@ impl Harness {
             job_type,
             job,
         };
-        execute_job(&self.ctx, &spec).expect("job should succeed");
+        execute_job(&self.ctx, &spec)
     }
 }
 
@@ -230,6 +240,7 @@ pub fn file_job(
         srcmount: vec![],
         retention,
         healthcheck: None,
+        verify: Default::default(),
     }
 }
 

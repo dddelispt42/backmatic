@@ -31,6 +31,10 @@ pub struct CommandRequest {
     pub stdin: Option<Stdio>,
     pub stdout: Option<Stdio>,
     pub stderr: Option<Stdio>,
+    /// When set, `run` monitors the child's `/proc/<pid>/io` byte counters and aborts the child
+    /// (SIGTERM then SIGKILL) if they make no progress for this long — catches backups that hang
+    /// forever (e.g. a wedged sshfs read returning I/O errors). `None` disables the watchdog.
+    pub stall_timeout: Option<Duration>,
 }
 
 impl CommandRequest {
@@ -42,7 +46,14 @@ impl CommandRequest {
             stdin: None,
             stdout: None,
             stderr: None,
+            stall_timeout: None,
         }
+    }
+
+    /// Enable the I/O-progress stall watchdog for this command (see [`CommandRequest::stall_timeout`]).
+    pub fn stall_timeout(mut self, timeout: Option<Duration>) -> Self {
+        self.stall_timeout = timeout;
+        self
     }
 
     pub fn arg(mut self, arg: impl Into<String>) -> Self {
@@ -168,13 +179,18 @@ impl CommandExecutor for RealCommandExecutor {
         let stdout_rx = spawn_reader(child.stdout.take());
         let stderr_rx = spawn_reader(child.stderr.take());
 
-        let status = child.wait();
+        let status = match request.stall_timeout {
+            Some(timeout) if !timeout.is_zero() => {
+                wait_with_watchdog(&mut child, pid, timeout, &request.program)
+            }
+            _ => child.wait().map_err(|source| BackmaticError::Command {
+                command: request.program.clone(),
+                code: None,
+                message: source.to_string(),
+            }),
+        };
         self.processes.unregister(pid);
-        let status = status.map_err(|source| BackmaticError::Command {
-            command: request.program.clone(),
-            code: None,
-            message: source.to_string(),
-        })?;
+        let status = status?;
 
         // Share one grace deadline across both streams so a daemonizing command costs at most
         // `OUTPUT_GRACE` total, not per-stream.
@@ -228,6 +244,134 @@ fn collect_output(rx: Option<mpsc::Receiver<Vec<u8>>>, deadline: std::time::Inst
         }
         None => Vec::new(),
     }
+}
+
+/// Longest we sleep between watchdog polls. Kept short so shutdown/exit is noticed promptly, but
+/// capped below `stall_timeout` so a small configured timeout still polls at least a few times.
+const WATCHDOG_POLL_INTERVAL: Duration = Duration::from_secs(5);
+/// Grace period after SIGTERM before escalating to SIGKILL for a stalled child.
+const WATCHDOG_KILL_GRACE: Duration = Duration::from_secs(5);
+
+/// Wait for `child` while enforcing the I/O-progress stall watchdog. Polls `/proc/<pid>/io`; if
+/// the cumulative read+write byte counters do not advance for `timeout`, the child is aborted
+/// (SIGTERM, then SIGKILL after a grace period) and its final status returned.
+fn wait_with_watchdog(
+    child: &mut std::process::Child,
+    pid: u32,
+    timeout: Duration,
+    program: &str,
+) -> Result<std::process::ExitStatus> {
+    let poll = std::cmp::min(timeout, WATCHDOG_POLL_INTERVAL).max(Duration::from_millis(100));
+    let mut last_bytes = read_proc_io_bytes(pid);
+    let mut last_progress = std::time::Instant::now();
+
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Ok(status),
+            Ok(None) => {}
+            Err(source) => {
+                return Err(BackmaticError::Command {
+                    command: program.to_string(),
+                    code: None,
+                    message: source.to_string(),
+                })
+            }
+        }
+
+        std::thread::sleep(poll);
+
+        match (read_proc_io_bytes(pid), last_bytes) {
+            // Counters advanced (or first successful reading): reset the stall clock.
+            (Some(now), Some(prev)) if now != prev => {
+                last_bytes = Some(now);
+                last_progress = std::time::Instant::now();
+            }
+            (Some(now), None) => {
+                last_bytes = Some(now);
+                last_progress = std::time::Instant::now();
+            }
+            // Couldn't read counters (kernel without per-proc io, or process gone): don't treat
+            // an unreadable /proc as a stall — let `try_wait` decide when it actually exits.
+            (None, _) => {
+                last_progress = std::time::Instant::now();
+            }
+            // Readable but unchanged: leave `last_progress` alone so the stall clock keeps running.
+            _ => {}
+        }
+
+        if last_progress.elapsed() >= timeout {
+            log::error!(
+                "stall watchdog: {program} (pid {pid}) made no I/O progress for {}s; aborting",
+                timeout.as_secs()
+            );
+            return Ok(abort_stalled_child(child, pid));
+        }
+    }
+}
+
+/// Terminate a stalled child: SIGTERM, wait up to [`WATCHDOG_KILL_GRACE`], then SIGKILL. Returns
+/// the reaped exit status.
+fn abort_stalled_child(child: &mut std::process::Child, pid: u32) -> std::process::ExitStatus {
+    send_signal(pid, term_signal());
+    let deadline = std::time::Instant::now() + WATCHDOG_KILL_GRACE;
+    while std::time::Instant::now() < deadline {
+        if let Ok(Some(status)) = child.try_wait() {
+            return status;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let _ = child.kill();
+    child.wait().unwrap_or_else(|_| default_killed_status())
+}
+
+#[cfg(unix)]
+fn term_signal() -> i32 {
+    libc::SIGTERM
+}
+
+#[cfg(not(unix))]
+fn term_signal() -> i32 {
+    0
+}
+
+#[cfg(unix)]
+fn send_signal(pid: u32, sig: i32) {
+    // SAFETY: kill() with a valid pid is safe; failures (already-exited) are ignored.
+    unsafe {
+        libc::kill(pid as libc::pid_t, sig);
+    }
+}
+
+#[cfg(not(unix))]
+fn send_signal(_pid: u32, _sig: i32) {}
+
+#[cfg(unix)]
+fn default_killed_status() -> std::process::ExitStatus {
+    use std::os::unix::process::ExitStatusExt;
+    std::process::ExitStatus::from_raw(libc::SIGKILL)
+}
+
+#[cfg(not(unix))]
+fn default_killed_status() -> std::process::ExitStatus {
+    use std::os::unix::process::ExitStatusExt;
+    std::process::ExitStatus::from_raw(1)
+}
+
+/// Read cumulative I/O for a pid as `rchar + wchar` from `/proc/<pid>/io`. Returns `None` when the
+/// file is missing/unreadable (non-Linux, permission, or the process already exited).
+fn read_proc_io_bytes(pid: u32) -> Option<u64> {
+    let contents = std::fs::read_to_string(format!("/proc/{pid}/io")).ok()?;
+    let mut total: u64 = 0;
+    let mut seen = false;
+    for line in contents.lines() {
+        if let Some(rest) = line.strip_prefix("rchar:").or_else(|| line.strip_prefix("wchar:")) {
+            if let Ok(v) = rest.trim().parse::<u64>() {
+                total = total.saturating_add(v);
+                seen = true;
+            }
+        }
+    }
+    seen.then_some(total)
 }
 
 fn build_command(request: &CommandRequest) -> Command {
@@ -295,6 +439,50 @@ mod display_tests {
             elapsed < Duration::from_secs(10),
             "run must return promptly despite the lingering descendant (took {elapsed:?})"
         );
+    }
+
+    // The stall watchdog must abort a child that makes no I/O progress within the timeout.
+    #[cfg(unix)]
+    #[test]
+    fn watchdog_aborts_stalled_child() {
+        use std::time::Instant;
+
+        let exec = RealCommandExecutor::default();
+        let req = CommandRequest::new("sleep")
+            .arg("60")
+            .stall_timeout(Some(Duration::from_secs(1)));
+
+        let start = Instant::now();
+        let result = exec.run(&req).expect("run should not error");
+        let elapsed = start.elapsed();
+
+        assert!(!result.status.success(), "stalled child should be aborted, not succeed");
+        assert!(
+            elapsed < Duration::from_secs(15),
+            "watchdog should abort the stalled child promptly (took {elapsed:?})"
+        );
+    }
+
+    // A command that keeps doing I/O must not be aborted by the watchdog.
+    #[cfg(unix)]
+    #[test]
+    fn watchdog_allows_progressing_child() {
+        let exec = RealCommandExecutor::default();
+        // Continuously writes for ~3s: /proc/<pid>/io wchar advances every poll.
+        let req = CommandRequest::new("sh")
+            .arg("-c")
+            .arg("for i in $(seq 1 30); do echo x; sleep 0.1; done")
+            .stall_timeout(Some(Duration::from_secs(2)));
+
+        let result = exec.run(&req).expect("run should not error");
+        assert!(result.status.success(), "progressing child should finish normally");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_proc_io_bytes_reads_self() {
+        let pid = std::process::id();
+        assert!(read_proc_io_bytes(pid).is_some(), "should read own /proc/<pid>/io on Linux");
     }
 }
 

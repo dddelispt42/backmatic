@@ -19,6 +19,12 @@ pub(crate) fn ensure_tmp_dir(ctx: &BackmaticContext) -> Result<String> {
     Ok(dir.to_string_lossy().to_string())
 }
 
+/// Resolve the stall-watchdog window for backup transfer commands from job defaults (see
+/// [`crate::config::defaults::resolve_stall_timeout`]). `None` disables the watchdog.
+pub(crate) fn stall_timeout(ctx: &BackmaticContext) -> Option<std::time::Duration> {
+    crate::config::defaults::resolve_stall_timeout(ctx.config.file.defaults.stall_timeout)
+}
+
 pub fn execute_job(ctx: &BackmaticContext, spec: &JobSpec) -> Result<()> {
     if ctx.config.dry_run {
         log::info!(

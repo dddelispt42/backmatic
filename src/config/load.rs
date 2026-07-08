@@ -219,6 +219,7 @@ mod tests {
             srcmount: vec![],
             retention: RetentionConfig::default(),
             healthcheck: None,
+            verify: Default::default(),
         };
         let file = FileConfig {
             rsync: vec![job],
@@ -248,6 +249,7 @@ mod tests {
             srcmount: vec![],
             retention: RetentionConfig::default(),
             healthcheck: None,
+            verify: Default::default(),
         };
         let file = FileConfig {
             rsync: vec![job],

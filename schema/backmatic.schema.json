@@ -24,6 +24,7 @@
       "properties": {
         "logdir": { "type": "string" },
         "tmp_dir": { "type": "string" },
+        "stall_timeout": { "type": "integer", "minimum": 0 },
         "tools": {
           "type": "object",
           "properties": {
@@ -103,6 +104,15 @@
         { "type": "array", "items": { "$ref": "#/definitions/srcmountEntry" } }
       ]
     },
+    "verify": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean", "default": false },
+        "samples": { "type": "integer", "minimum": 1, "default": 1 },
+        "max_file_size": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
     "fileJob": {
       "type": "object",
       "properties": {
@@ -119,7 +129,8 @@
         "keep_weekly": { "type": "integer", "minimum": 0 },
         "keep_monthly": { "type": "integer", "minimum": 0 },
         "keep_yearly": { "type": "integer", "minimum": 0 },
-        "healthcheck": { "$ref": "#/definitions/healthcheck" }
+        "healthcheck": { "$ref": "#/definitions/healthcheck" },
+        "verify": { "$ref": "#/definitions/verify" }
       },
       "allOf": [
         { "anyOf": [{ "required": ["dest"] }, { "required": ["destmount"] }] },

@@ -121,6 +121,11 @@ pub struct DefaultsConfig {
     /// exhaust a small `/tmp`. Defaults to a disk-backed path (see `resolve_tmp_dir`).
     #[serde(default)]
     pub tmp_dir: Option<String>,
+    /// Stall-watchdog window in seconds for backup transfers. A backup whose child makes no I/O
+    /// progress for this long is aborted (treated as hung). `0` disables. See
+    /// `resolve_stall_timeout`.
+    #[serde(default)]
+    pub stall_timeout: Option<u64>,
     #[serde(default)]
     pub tools: ToolPathsConfig,
 }
@@ -134,7 +139,37 @@ impl Default for DefaultsConfig {
         Self {
             logdir: default_logdir(),
             tmp_dir: None,
+            stall_timeout: None,
             tools: ToolPathsConfig::default(),
+        }
+    }
+}
+
+/// Post-backup restore verification (borg/restic only). When enabled, backmatic hashes a random
+/// sample of source files while mounted, then restores the same paths from the freshly written
+/// repository and compares hashes. A mismatch fails the job (and the healthcheck).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VerifyConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// Number of files to sample and verify per source. Defaults to 1.
+    #[serde(default = "default_verify_samples")]
+    pub samples: u32,
+    /// Skip sampling files larger than this many bytes (keeps restore cheap). `None` = no cap.
+    #[serde(default)]
+    pub max_file_size: Option<u64>,
+}
+
+fn default_verify_samples() -> u32 {
+    1
+}
+
+impl Default for VerifyConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            samples: default_verify_samples(),
+            max_file_size: None,
         }
     }
 }
@@ -210,6 +245,9 @@ pub struct FileBackupJob {
     #[serde(flatten)]
     pub retention: RetentionConfig,
     pub healthcheck: Option<HealthcheckConfig>,
+    /// Post-backup restore verification (borg/restic only; ignored for rsync).
+    #[serde(default)]
+    pub verify: VerifyConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

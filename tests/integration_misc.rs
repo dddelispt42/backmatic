@@ -95,6 +95,7 @@ fn t18_healthcheck_success_and_failure_ping() {
                 url: "https://hc.example.com".into(),
                 uuid: "uuid-fail".into(),
             }),
+            verify: Default::default(),
         },
     }];
     let scheduler = Scheduler::new(

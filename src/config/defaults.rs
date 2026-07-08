@@ -5,6 +5,10 @@ pub const DEFAULT_RETRY_COUNT: u32 = 23;
 pub const DEFAULT_CONTINUOUS_HOURS: u64 = 0;
 pub const CONFIG_FILENAME: &str = "backmatic.yml";
 
+/// Default stall watchdog window (seconds). A backup transfer whose child process makes no I/O
+/// progress (`/proc/<pid>/io`) for this long is treated as hung and aborted. `0` disables it.
+pub const DEFAULT_STALL_TIMEOUT_SEC: u64 = 1800;
+
 /// True when the process is running with effective root privileges.
 pub fn is_root() -> bool {
     #[cfg(unix)]
@@ -79,6 +83,23 @@ pub fn resolve_tmp_dir(configured: Option<&str>) -> PathBuf {
         }
     }
     default_tmp_dir()
+}
+
+/// Resolve the stall-watchdog window as a `Duration`, or `None` when disabled (`0`). Precedence:
+/// explicit config, then `BACKMATIC_STALL_TIMEOUT` (seconds), then [`DEFAULT_STALL_TIMEOUT_SEC`].
+pub fn resolve_stall_timeout(configured: Option<u64>) -> Option<std::time::Duration> {
+    let secs = configured
+        .or_else(|| {
+            std::env::var("BACKMATIC_STALL_TIMEOUT")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+        })
+        .unwrap_or(DEFAULT_STALL_TIMEOUT_SEC);
+    if secs == 0 {
+        None
+    } else {
+        Some(std::time::Duration::from_secs(secs))
+    }
 }
 
 /// Base directory for per-origin sshfs mount points (`{base}/{origin_slug}/`).

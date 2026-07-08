@@ -1,3 +1,11 @@
+defaults:
+  logdir: /var/log/backmatic
+  # Scratch dir exported as TMPDIR to restic/borg so large temp files don't exhaust /tmp.
+  tmp_dir: /var/tmp/backmatic-tmp
+  # Abort a backup transfer that makes no I/O progress for this many seconds (a hung sshfs
+  # read, a stuck network, etc.). 0 disables the watchdog. Default: 1800.
+  stall_timeout: 1800
+
 rsync:
   - comment: "Local documents"
     logdir: /var/log/backmatic
@@ -50,6 +58,14 @@ restic:
       - /data/dest/restic-repo
     password: ${RESTIC_PASSWORD}
     keep_daily: 14
+    # After each backup, restore a random sample of files from the repo and compare their
+    # hashes against the originals. A mismatch fails the job (and pings the healthcheck as
+    # failed). Opt-in; borg/restic only (ignored for rsync).
+    verify:
+      enabled: true
+      samples: 2
+      # Optional: skip sampling files larger than this many bytes (keeps restore cheap).
+      # max_file_size: 104857600
     healthcheck:
       url: https://healthchecks.example.com
       uuid: 11111111-2222-3333-4444-555555555555

@@ -1,9 +1,11 @@
+use std::path::Path;
+
 use crate::config::{filenamify, generate_log_path, logdir_for_job};
-use crate::config::types::{FileBackupJob, JobId};
+use crate::config::types::{FileBackupJob, JobId, VerifyConfig};
 use crate::error::{BackmaticError, Result};
 use crate::healthcheck;
 use crate::inject::{log_command_output, BackmaticContext, CommandRequest};
-use crate::mount::{prepare_sources, resolve_destinations};
+use crate::mount::{enumerate_sources, mount_source, resolve_destinations, SourcedPath};
 
 pub fn run(ctx: &BackmaticContext, job_id: &JobId, job: &FileBackupJob) -> Result<()> {
     let scope = job_id.scope_key();
@@ -19,19 +21,31 @@ pub fn run(ctx: &BackmaticContext, job_id: &JobId, job: &FileBackupJob) -> Resul
     }
 
     let tmp_dir = crate::runners::ensure_tmp_dir(ctx)?;
+    let stall = crate::runners::stall_timeout(ctx);
 
-    let prepared = prepare_sources(ctx, &scope, job)?;
-    let sources = prepared.sources;
-    let _staging = prepared.guard;
-    // Sources that could not even be mounted are already recorded as failures; we still back up
-    // everything that mounted, then report the job as failed at the end.
-    let mut failures = prepared.failures;
+    let specs = enumerate_sources(&scope, job);
+    let mut failures = Vec::new();
     let (dests, _mount_session) =
         resolve_destinations(ctx, &scope, &job.comment, &job.dest, &job.destmount)?;
 
+    // Ensure every repository exists up front so an init failure surfaces before mounting sources.
     for dest in &dests {
-        for source in &sources {
-            ensure_repo(ctx, &logfile, dest, &job.password, &tmp_dir)?;
+        ensure_repo(ctx, &logfile, dest, &job.password, &tmp_dir)?;
+    }
+
+    // Lazy per-source flow: mount just before backup, unmount immediately after (see restic).
+    for spec in &specs {
+        let (source, guard) = match mount_source(ctx, spec) {
+            Ok(v) => v,
+            Err(e) => {
+                let msg = format!("srcmount {}: {e}", spec.describe());
+                log::warn!("borg ({}) source failed to mount, skipping: {msg}", job.comment);
+                failures.push(msg);
+                continue;
+            }
+        };
+
+        for dest in &dests {
             log::info!(
                 "Start borg ({}): {} --> {}",
                 job.comment,
@@ -47,6 +61,7 @@ pub fn run(ctx: &BackmaticContext, job_id: &JobId, job: &FileBackupJob) -> Resul
             let mut req = CommandRequest::new(ctx.paths.borg.to_string_lossy().to_string())
                 .env("BORG_RELOCATED_REPO_ACCESS_IS_OK", "yes")
                 .env("TMPDIR", tmp_dir.clone())
+                .stall_timeout(stall)
                 .arg("create")
                 .arg("--exclude-caches")
                 .arg(archive)
@@ -57,20 +72,41 @@ pub fn run(ctx: &BackmaticContext, job_id: &JobId, job: &FileBackupJob) -> Resul
             for ex in &job.exclude {
                 req = req.arg(format!("--exclude={ex}"));
             }
-            match run_source(ctx, &logfile, &req) {
-                Ok(()) => log::info!(
-                    "Finished borg ({}): {} --> {}",
-                    job.comment,
-                    source.local_path.display(),
-                    dest
-                ),
+            let created = match run_source(ctx, &logfile, &req) {
+                Ok(()) => {
+                    log::info!(
+                        "Finished borg ({}): {} --> {}",
+                        job.comment,
+                        source.local_path.display(),
+                        dest
+                    );
+                    true
+                }
                 Err(msg) => {
                     let full = format!("'{}' --> '{}': {msg}", source.local_path.display(), dest);
                     log::warn!("borg ({}) source failed, skipping: {full}", job.comment);
                     failures.push(full);
+                    false
+                }
+            };
+
+            // Verify while the source is still mounted (restore compares against the live source).
+            if created && job.verify.enabled {
+                if let Err(msg) =
+                    verify_source(ctx, dest, &job.password, &source, &tmp_dir, &job.verify)
+                {
+                    let full = format!("verify '{}' --> '{}': {msg}", source.local_path.display(), dest);
+                    log::error!("borg ({}) {full}", job.comment);
+                    failures.push(full);
                 }
             }
         }
+        // Unmount this source immediately before moving on to the next one.
+        drop(guard);
+    }
+
+    // Retention runs once per repository after all sources have been written and unmounted.
+    for dest in &dests {
         prune_repo(ctx, &logfile, dest, job, &tmp_dir)?;
     }
 
@@ -110,6 +146,105 @@ fn run_source(ctx: &BackmaticContext, logfile: &str, req: &CommandRequest) -> st
         }
         Err(e) => Err(e.to_string()),
     }
+}
+
+/// Restore-verify a freshly written source against the repository: hash a random sample of the
+/// (still mounted) source files, `borg extract --stdout` the same paths from the archive we just
+/// created for this origin, and compare. Returns `Err` on the first mismatch or restore failure.
+fn verify_source(
+    ctx: &BackmaticContext,
+    dest: &str,
+    password: &Option<String>,
+    source: &SourcedPath,
+    tmp_dir: &str,
+    cfg: &VerifyConfig,
+) -> std::result::Result<(), String> {
+    let samples = crate::verify::sample_files(&source.local_path, cfg.samples, cfg.max_file_size);
+    if samples.is_empty() {
+        log::info!(
+            "borg verify: no eligible files to sample under '{}'; skipping",
+            source.local_path.display()
+        );
+        return Ok(());
+    }
+    // The archive we just created is the most recent one in the repo (per-source loop creates then
+    // verifies immediately), so `--last 1` identifies it.
+    let archive = latest_archive(ctx, dest, password, tmp_dir)?;
+    log::info!(
+        "borg verify: restoring {} sampled file(s) for '{}' from {dest}::{archive}",
+        samples.len(),
+        source.local_path.display()
+    );
+    for sample in &samples {
+        let stored = borg_stored_path(&source.local_path, &sample.rel_path);
+        let mut req = CommandRequest::new(ctx.paths.borg.to_string_lossy().to_string())
+            .env("BORG_RELOCATED_REPO_ACCESS_IS_OK", "yes")
+            .env("TMPDIR", tmp_dir)
+            .arg("extract")
+            .arg("--stdout")
+            .arg(format!("{dest}::{archive}"))
+            .arg(stored.clone());
+        if let Some(pw) = password {
+            req = req.env("BORG_PASSPHRASE", pw.clone());
+        }
+        let result = ctx.commands.run(&req).map_err(|e| e.to_string())?;
+        if !result.status.success() {
+            return Err(format!(
+                "borg extract {stored} failed (exit {:?}): {}",
+                result.status.code(),
+                String::from_utf8_lossy(&result.stderr).trim()
+            ));
+        }
+        crate::verify::compare(sample, &result.stdout)?;
+    }
+    log::info!(
+        "borg verify OK: {} file(s) match for '{}'",
+        samples.len(),
+        source.local_path.display()
+    );
+    Ok(())
+}
+
+/// Name of the most recently created archive in `dest`.
+fn latest_archive(
+    ctx: &BackmaticContext,
+    dest: &str,
+    password: &Option<String>,
+    tmp_dir: &str,
+) -> std::result::Result<String, String> {
+    let mut req = CommandRequest::new(ctx.paths.borg.to_string_lossy().to_string())
+        .env("BORG_RELOCATED_REPO_ACCESS_IS_OK", "yes")
+        .env("TMPDIR", tmp_dir)
+        .arg("list")
+        .arg("--short")
+        .arg("--last")
+        .arg("1")
+        .arg(dest);
+    if let Some(pw) = password {
+        req = req.env("BORG_PASSPHRASE", pw.clone());
+    }
+    let result = ctx.commands.run(&req).map_err(|e| e.to_string())?;
+    if !result.status.success() {
+        return Err(format!(
+            "borg list failed (exit {:?}): {}",
+            result.status.code(),
+            String::from_utf8_lossy(&result.stderr).trim()
+        ));
+    }
+    String::from_utf8_lossy(&result.stdout)
+        .lines()
+        .next()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "borg list returned no archive".to_string())
+}
+
+/// Path as borg stores it: absolute source paths are recorded with the leading `/` stripped.
+fn borg_stored_path(root: &Path, rel: &Path) -> String {
+    root.join(rel)
+        .to_string_lossy()
+        .trim_start_matches('/')
+        .to_string()
 }
 
 fn ensure_repo(
